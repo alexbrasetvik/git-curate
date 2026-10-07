@@ -58,7 +58,7 @@ Usage
     # Slice only specific files:
     uvx git-curate slice src/auth.py src/schema.py
 
-    # Dry-run — show what would be committed without committing:
+    # Dry-run — list the staged hunks (before splitting) without committing:
     uvx git-curate slice --dry-run
 
     # Stage all unstaged changes then slice:
@@ -1074,7 +1074,7 @@ def slice_hunks(paths: list[str], min_context: int = 4, by_line: bool = False) -
 
 
 def _dry_run_remaining(diff_text: str) -> str:
-    """Parse all hunks in a diff for dry-run display."""
+    """List every hunk in a diff as it appears, without splitting, for dry-run display."""
     lines_out: list[str] = []
     count = 0
 
@@ -1140,7 +1140,7 @@ def _ensure_staged_or_stage_all(paths: list[str], all_changes: bool) -> None:
 
 
 def _print_dry_run_hunks(paths: list[str]) -> None:
-    """Show all hunks that would be committed, without actually committing."""
+    """List the staged diff's hunks, before splitting, without committing anything."""
     print("Dry-run — no commits will be created:\n")
     diff_text = str(git.diff("--cached", "-U3", "--", *paths)) if paths else str(git.diff("--cached", "-U3"))
     output = _dry_run_remaining(diff_text)
@@ -1165,7 +1165,7 @@ def slice_command(
         bool,
         typer.Option(
             "--dry-run",
-            help="Show the hunks that would be committed without committing",
+            help="List the staged hunks (before --split-context splitting) without committing",
         ),
     ] = False,
     all_changes: Annotated[

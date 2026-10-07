@@ -71,6 +71,11 @@ git = sh.git.bake(
     "rebase.autosquash=false",
     "-c",
     "rebase.backend=merge",
+    # Reordering temp commits makes each pick's merge base (its original
+    # parent) differ wildly from HEAD, so directory-rename heuristics see
+    # phantom renames and stop with "implicit dir rename" conflicts.
+    "-c",
+    "merge.directoryRenames=false",
     "-c",
     "commit.gpgSign=false",
     _tty_out=False,

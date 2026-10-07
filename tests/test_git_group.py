@@ -11,7 +11,15 @@ import sh
 from typer.testing import CliRunner
 
 from git_curate.cli import app
-from git_curate.common import Commit, git
+from git_curate.common import (
+    Commit,
+    RebaseFailedError,
+    abort_session,
+    git,
+    load_failed_attempt,
+    rebase_in_progress,
+    save_failed_attempt,
+)
 from git_curate.group import (
     AmendEntry,
     Group,
@@ -273,6 +281,26 @@ class TestExecuteRebase:
         assert (git_repo / "new" / "lib.py").read_text() == "new_lib = True\n"
         assert (git_repo / "old" / "lib.py").read_text() == "old_lib = True\n"
 
+    def test_stopped_rebase_is_aborted(self, git_repo: Path) -> None:
+        # A paused rebase would lose the tool's -c settings on a manual
+        # --continue, so a stop must leave HEAD back on the temp commits.
+        base = self._setup_temp_commits(git_repo, n=2)
+        tip = str(git("rev-parse", "HEAD")).strip()
+        commits = list_commits(base)
+        groups = [
+            Group(message="feat: first", commits=[commits[0].message]),
+            Group(message="feat: second", commits=[commits[1].message]),
+        ]
+        plan = build_rebase_plan(commits, groups)
+        plan.insert(1, "exec echo stopping-here && false")
+        with pytest.raises(RebaseFailedError) as exc_info:
+            execute_rebase(base, plan)
+
+        assert "stopping-here" in exc_info.value.output
+        assert not rebase_in_progress()
+        assert str(git("rev-parse", "HEAD")).strip() == tip
+        assert not os.path.exists(str(git("rev-parse", "--git-path", "git-curate-group")).strip())
+
     def test_ungrouped_commits_preserved(self, git_repo: Path) -> None:
         base = self._setup_temp_commits(git_repo, n=2)
         commits = list_commits(base)
@@ -330,3 +358,66 @@ class TestGroupCommandSpecFile:
         result = self._runner.invoke(app, ["group", base, "--spec", str(spec_file), *extra_args])
         assert result.exit_code == 0, result.output
         assert spec_file.exists() == expect_exists
+
+
+# ---------------------------------------------------------------------------
+# Failed group attempts
+# ---------------------------------------------------------------------------
+
+
+class TestFailedAttempt:
+    _runner = CliRunner()
+
+    def _setup(self, git_repo: Path, tmp_path: Path) -> tuple[str, Path]:
+        base = TestGroupCommandSpecFile()._setup_temp_commits(git_repo)
+        spec_file = tmp_path / "groups.json"
+        TestGroupCommandSpecFile()._write_spec(spec_file, base)
+        return base, spec_file
+
+    def _fail_commit_msg_hook(self, git_repo: Path) -> Path:
+        # The amend steps run hooks, so a failing commit-msg hook stops the rebase.
+        hook = git_repo / ".git" / "hooks" / "commit-msg"
+        hook.write_text("#!/bin/sh\necho hook-says-no\nexit 1\n")
+        hook.chmod(0o755)
+        return hook
+
+    def test_failed_group_saves_spec_and_output(self, git_repo: Path, tmp_path: Path) -> None:
+        base, spec_file = self._setup(git_repo, tmp_path)
+        self._fail_commit_msg_hook(git_repo)
+
+        result = self._runner.invoke(app, ["group", base, "--spec", str(spec_file)])
+
+        assert result.exit_code != 0
+        assert not rebase_in_progress()
+        attempt = load_failed_attempt(base)
+        assert attempt is not None
+        assert attempt.spec_text == spec_file.read_text()
+        assert "hook-says-no" in attempt.output
+
+    def test_successful_group_clears_saved_attempt(self, git_repo: Path, tmp_path: Path) -> None:
+        base, spec_file = self._setup(git_repo, tmp_path)
+        hook = self._fail_commit_msg_hook(git_repo)
+        self._runner.invoke(app, ["group", base, "--spec", str(spec_file)])
+        assert load_failed_attempt(base) is not None
+
+        hook.unlink()
+        result = self._runner.invoke(app, ["group", base, "--spec", str(spec_file)])
+
+        assert result.exit_code == 0, result.output
+        assert load_failed_attempt(base) is None
+
+    def test_attempt_for_another_base_is_dropped(self, git_repo: Path) -> None:
+        save_failed_attempt("0" * 40, "[]", "boom")
+        assert load_failed_attempt("1" * 40) is None
+        assert load_failed_attempt("0" * 40) is None
+
+    def test_abort_session_clears_saved_attempt(self, git_repo: Path) -> None:
+        base = str(git("rev-parse", "HEAD")).strip()
+        save_failed_attempt(base, "[]", "boom")
+        abort_session(base)
+        assert load_failed_attempt(base) is None
+
+    def test_rebase_that_never_started_reports_its_own_error(self, git_repo: Path) -> None:
+        with pytest.raises(RebaseFailedError) as exc_info:
+            execute_rebase("no-such-ref", ["pick 0000000"])
+        assert "no-such-ref" in exc_info.value.output

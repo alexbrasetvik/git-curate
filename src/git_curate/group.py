@@ -41,10 +41,13 @@ Algorithm:
    followed by an "exec git commit --amend -F <file> --reset-author"
    to set the final message and restore the real author; the rest get
    "fixup". Ungrouped commits get plain "pick".
-   Each commit message goes into a temp file so newlines and special
+   Each commit message goes into a file under the git dir so newlines and special
    characters don't break the plan.
 5. Set GIT_SEQUENCE_EDITOR to a script that replaces the rebase todo
-   with this plan, then execute `git rebase -i <base>` non-interactively.
+   with this plan, then execute `git rebase -i --autostash <base>`
+   non-interactively.
+6. If the rebase stops, abort it (HEAD returns to the temp commits) and save
+   the spec under the git dir so the grouping work can be revised, not redone.
 
 Usage:
 ------
@@ -68,8 +71,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
-import tempfile
 import textwrap
 from dataclasses import dataclass
 from typing import Annotated
@@ -84,10 +87,13 @@ from .common import (
     NoSessionError,
     RebaseFailedError,
     SubApp,
+    clear_failed_attempt,
     git,
     list_commits,
     pre_checks,
+    rebase_in_progress,
     resolve_base,
+    save_failed_attempt,
 )
 
 app = SubApp()
@@ -269,40 +275,52 @@ def execute_rebase(
 ) -> None:
     """Run a non-interactive rebase with our plan.
 
-    Writes the plan into a temp directory that also holds per-message files for
-    the amend steps.  The directory must stay alive for the full duration of the
-    rebase because git executes the amend commands lazily.
+    Writes the plan and the per-message files for the amend steps into a
+    directory under the git dir.
+
+    If the rebase stops (a conflict or a failing exec), it is aborted rather
+    than left paused: the tool's `-c` settings would not survive a manual
+    `git rebase --continue`, and the fix is a revised spec anyway.  HEAD is
+    back on the temp commits when RebaseFailedError is raised.
     """
     pre_checks()
 
-    with tempfile.TemporaryDirectory(prefix="git_group_") as tmpdir:
-        # Expand ("amend", message) sentinels into "exec" lines, writing each
-        # message to a file so special characters are safe.
-        todo_lines = _expand_plan_to_todo_lines(plan, tmpdir)
+    # The amend steps read their message files while the rebase runs.
+    msg_dir = str(git("rev-parse", "--git-path", "git-curate-group")).strip()
+    shutil.rmtree(msg_dir, ignore_errors=True)  # stale, from an aborted rebase
+    os.makedirs(msg_dir)
 
-        seq_script = os.path.join(tmpdir, "sequence-editor.sh")
-        write_sequence_editor_script(todo_lines, seq_script)
+    # Expand AmendEntry sentinels into "exec" lines, writing each
+    # message to a file so special characters are safe.
+    todo_lines = _expand_plan_to_todo_lines(plan, os.path.abspath(msg_dir))
 
-        env = os.environ.copy()
-        env["GIT_SEQUENCE_EDITOR"] = seq_script
+    # git runs the sequence editor on its todo; ours swaps in the plan.
+    seq_script = os.path.join(msg_dir, "sequence-editor.sh")
+    write_sequence_editor_script(todo_lines, seq_script)
+    env = os.environ.copy()
+    env["GIT_SEQUENCE_EDITOR"] = os.path.abspath(seq_script)
 
-        try:
-            result = git.rebase(
-                "-i",
-                "--autostash",
-                base,
-                _env=env,
-                _err_to_out=True,
-            )
-            print(str(result).strip())
-        except sh.ErrorReturnCode as e:
-            print(
-                "Rebase failed. You may need to resolve conflicts.\n\n"
-                f"  git rebase output:\n{textwrap.indent(str(e.stdout or ''), '    ')}\n"
-                f"\nTo abort: git rebase --abort",
-                file=sys.stderr,
-            )
-            raise RebaseFailedError() from e
+    try:
+        result = git.rebase(
+            "-i",
+            "--autostash",
+            base,
+            _env=env,
+            _err_to_out=True,
+        )
+        print(str(result).strip())
+    except sh.ErrorReturnCode as e:
+        output = e.stdout.decode(errors="replace")
+        if rebase_in_progress():  # it may have failed before starting
+            git.rebase("--abort")
+        print(
+            f"Rebase stopped:\n{textwrap.indent(output.strip(), '    ')}\n\n"
+            "Aborted the rebase; the temp commits are restored.",
+            file=sys.stderr,
+        )
+        raise RebaseFailedError(output) from e
+    finally:
+        shutil.rmtree(msg_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -486,7 +504,18 @@ def group_command(
         print("Dry-run — no rebase executed.")
         return
 
-    execute_rebase(base, todo_lines)
+    try:
+        execute_rebase(base, todo_lines)
+    except RebaseFailedError as e:
+        # The spec took an agent's whole session to write; keep it for revising.
+        saved = save_failed_attempt(base, spec_text, e.output)
+        print(
+            f"\nSaved the spec to {saved}.\n"
+            "Revise the grouping (usually the ordering) and run `git-curate group` again.",
+            file=sys.stderr,
+        )
+        raise
+    clear_failed_attempt()
 
     # Clean up the spec file now that the rebase succeeded.
     # If the user passed --keep-spec or read from stdin, skip this.

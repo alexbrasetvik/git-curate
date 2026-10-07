@@ -172,7 +172,66 @@ def abort_session(base_sha: str) -> int:
     """Reset HEAD to *base_sha* and return the number of dropped commits."""
     n = count_commits_since(base_sha)
     git("reset", "--mixed", base_sha)
+    # A saved spec names the temp commits just dropped, so it can't be reused.
+    clear_failed_attempt()
     return n
+
+
+# ---------------------------------------------------------------------------
+# Failed group attempts
+# ---------------------------------------------------------------------------
+#
+# When `group` fails, the spec is the expensive part: an agent spent a whole
+# session reasoning it out. Keep it (and why it failed) under the git dir so a
+# later harness run can revise it instead of regrouping from scratch.
+
+
+@dataclass
+class FailedAttempt:
+    spec_text: str
+    output: str
+    path: str  # where spec.json lives, for editing and re-running by hand
+
+
+def _failed_attempt_dir() -> str:
+    return str(git("rev-parse", "--git-path", "git-curate-failed")).strip()
+
+
+def save_failed_attempt(base: str, spec_text: str, output: str) -> str:
+    """Record a failed group attempt for *base*; return the saved spec path."""
+    d = _failed_attempt_dir()
+    os.makedirs(d, exist_ok=True)
+    for name, content in (("base", base), ("spec.json", spec_text), ("error.txt", output)):
+        with open(os.path.join(d, name), "w") as f:
+            f.write(content)
+    return os.path.abspath(os.path.join(d, "spec.json"))
+
+
+def load_failed_attempt(base: str) -> FailedAttempt | None:
+    """Return the failed attempt saved for *base*, or None.
+
+    A record saved for a different base belongs to an older session whose
+    temp commits no longer exist, so it is deleted.
+    """
+    d = _failed_attempt_dir()
+    try:
+        with open(os.path.join(d, "base")) as f:
+            saved_base = f.read().strip()
+        with open(os.path.join(d, "spec.json")) as f:
+            spec_text = f.read()
+        with open(os.path.join(d, "error.txt")) as f:
+            output = f.read()
+    except OSError:
+        return None  # nothing saved
+
+    if saved_base != base:
+        clear_failed_attempt()
+        return None
+    return FailedAttempt(spec_text=spec_text, output=output, path=os.path.abspath(os.path.join(d, "spec.json")))
+
+
+def clear_failed_attempt() -> None:
+    shutil.rmtree(_failed_attempt_dir(), ignore_errors=True)
 
 
 class Exit(SystemExit):
@@ -250,19 +309,23 @@ def pre_checks() -> None:
     check_no_rebase_in_progress()
 
 
+def rebase_in_progress(cwd: str | None = None) -> bool:
+    """Return True if a rebase is in progress in the repo at *cwd*."""
+    git_dir = str(git("rev-parse", "--absolute-git-dir", _cwd=cwd)).strip()
+    return any(os.path.isdir(os.path.join(git_dir, d)) for d in ("rebase-merge", "rebase-apply"))
+
+
 def check_no_rebase_in_progress() -> None:
     """Raise RebaseInProgressError if a rebase is already in progress."""
-    git_dir = str(git("rev-parse", "--git-dir")).strip()
-    for state_dir in ("rebase-merge", "rebase-apply"):
-        if os.path.isdir(os.path.join(git_dir, state_dir)):
-            print(
-                "Error: a rebase is already in progress.\n\n"
-                "Resolve it first:\n"
-                "  git rebase --continue   # after fixing conflicts\n"
-                "  git rebase --abort      # to cancel it entirely",
-                file=sys.stderr,
-            )
-            raise RebaseInProgressError()
+    if rebase_in_progress():
+        print(
+            "Error: a rebase is already in progress.\n\n"
+            "Resolve it first:\n"
+            "  git rebase --continue   # after fixing conflicts\n"
+            "  git rebase --abort      # to cancel it entirely",
+            file=sys.stderr,
+        )
+        raise RebaseInProgressError()
 
 
 def resolve_base() -> str | None:

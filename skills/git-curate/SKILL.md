@@ -224,6 +224,8 @@ uvx git-curate group --spec <spec-path>
 
 Single invocation only. Do not call `group` multiple times or attempt partial applies. Do not invoke `git rebase`. The `group` command deletes the spec file automatically on success.
 
+If `group` fails with "Rebase stopped", it has already aborted the rebase and restored the temp commits. Read the failure output, revise the spec (usually two commits touching the same lines are in the wrong order), and run `group` again with the same spec path. Do not try to resolve conflicts by hand.
+
 After the command succeeds, verify the result using the base SHA from the **Base** line:
 
 ```bash

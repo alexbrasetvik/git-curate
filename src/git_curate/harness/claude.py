@@ -23,6 +23,23 @@ def _fmt_tokens(n: int) -> str:
     return str(n)
 
 
+def _error_message(event: Any) -> str:
+    """Best-effort human-readable message from an error event.
+
+    `error` may be an object with a `message`, or a bare string code (e.g. on
+    assistant events, whose `message` is the assistant message object).
+    """
+    error = event.get("error")
+    if isinstance(error, dict) and error.get("message"):
+        return str(error["message"])
+    if isinstance(error, str) and error:
+        return error
+    message = event.get("message")
+    if isinstance(message, str) and message:
+        return message
+    return str(event)
+
+
 def _show_tool_use(block: Any) -> None:
     name: str = block.get("name", "")
     tool_input: dict[str, Any] = block.get("input") or {}
@@ -97,24 +114,19 @@ def _stream_events(raw_event_stream: Iterable[str]) -> None:
                         _start_thinking()
                 if event.get("error"):
                     _stop_thinking()
-                    error = event.get("error") or {}
-                    msg = error.get("message") or event.get("message") or str(event)
-                    print(f"\nclaude: {msg}", file=sys.stderr, flush=True)
+                    print(f"\nclaude: {_error_message(event)}", file=sys.stderr, flush=True)
                     raise ClaudeError()
 
             elif event_type == "error":
                 _stop_thinking()
-                error = event.get("error") or {}
-                msg = error.get("message") or event.get("message") or str(event)
-                print(f"\nclaude: {msg}", file=sys.stderr, flush=True)
+                print(f"\nclaude: {_error_message(event)}", file=sys.stderr, flush=True)
                 raise ClaudeError()
 
             elif event_type == "system":
                 subtype: str = event.get("subtype", "")
                 if subtype == "error_during_execution":
                     _stop_thinking()
-                    msg = (event.get("error") or {}).get("message") or str(event)
-                    print(f"\nclaude: {msg}", file=sys.stderr, flush=True)
+                    print(f"\nclaude: {_error_message(event)}", file=sys.stderr, flush=True)
                     raise ClaudeError()
 
             elif event_type == "result":

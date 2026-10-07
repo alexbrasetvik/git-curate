@@ -404,10 +404,11 @@ def _apply_from_squash(from_commit: str) -> None:
 def _ensure_staged_or_stage_all(paths: list[str], all_changes: bool) -> None:
     """Make sure there is something staged before slicing, or exit clearly.
 
-    Three possible states:
-      - Already staged          → nothing to do, proceed.
-      - Nothing staged + --all  → stage tracked unstaged files automatically.
-      - Nothing staged, no --all → tell the user to stage something and exit.
+    Possible states:
+      - Already staged             → nothing to do, proceed.
+      - Nothing staged + --all     → stage the given paths, or all changes to tracked files.
+      - Nothing staged or unstaged → say so and return; slicing then finds nothing.
+      - Nothing staged, no --all   → tell the user to stage something and exit.
     """
     staged_stat = str(git.diff("--cached", "--stat")).strip()
     if staged_stat:
@@ -417,7 +418,7 @@ def _ensure_staged_or_stage_all(paths: list[str], all_changes: bool) -> None:
     unstaged_stat = str(git.diff("--stat")).strip()
 
     if unstaged_stat and all_changes:
-        # --all was passed: stage everything the user hasn't explicitly excluded.
+        # --all was passed: stage the given paths, or every tracked file's changes.
         if paths:
             git.add("--", *paths)
         else:

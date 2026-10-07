@@ -72,7 +72,7 @@ reports back with the final commit log.
    - **Session active**: proceed directly to step 1 (no slicing needed).
    - **Session none, staged files**: run `uvx git-curate slice`.
    - **Session none, no staged files, unstaged files**: ask the user:
-     _"You have unstaged changes but nothing is staged. Should I treat all unstaged changes as what will be committed (equivalent to `git add -A`)?"_
+     _"You have unstaged changes but nothing is staged. Should I treat all unstaged changes as what will be committed (equivalent to `git add -u`; untracked files are not included)?"_
      If they confirm, run `uvx git-curate slice --all`. If they decline, ask them to stage what they want first and stop.
    - **Session none, nothing staged or unstaged**: nothing to do.
 

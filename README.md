@@ -56,7 +56,7 @@ Stage your changes, then run:
 uvx git-curate slice
 ```
 
-**Staged vs. unstaged:** `slice` operates on whatever is staged. If nothing is staged but you have unstaged changes, pass `--all` to stage everything first:
+**Staged vs. unstaged:** `slice` operates on whatever is staged. If nothing is staged but you have unstaged changes, pass `--all` to stage changes to tracked files first (untracked files are not added):
 
 ```bash
 uvx git-curate slice --all

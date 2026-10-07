@@ -58,7 +58,7 @@ def default(
     ] = False,
     all_changes: Annotated[
         bool,
-        typer.Option("--all", "-a", help="Stage all unstaged changes before slicing."),
+        typer.Option("--all", "-a", help="Stage all changes, including untracked files, before slicing."),
     ] = False,
     resume: Annotated[
         bool,

@@ -41,7 +41,7 @@ line-length = 120
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.11"
 show_error_codes = true
 follow_imports = "normal"
 local_partial_types = true

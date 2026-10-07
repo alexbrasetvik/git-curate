@@ -579,7 +579,9 @@ def _split_at(header: str, body: list[str], cuts: list[int]) -> list[list[str]]:
     return pieces
 
 
-def _parse_file_block(file_block: str, min_context: int, by_line: bool = False) -> list[Hunk]:
+def _parse_file_block(
+    file_block: str, min_context: int, by_line: bool = False, split_on_blank_lines: bool = True
+) -> list[Hunk]:
     """Turn one file's diff into hunks that apply in order, each on top of the previous ones."""
     lines = split_lines(file_block)
 
@@ -615,8 +617,10 @@ def _parse_file_block(file_block: str, min_context: int, by_line: bool = False) 
                 pieces = [sub_hunk]
             elif by_line:
                 pieces = _split_at_lines(sub_hunk)
-            else:
+            elif split_on_blank_lines:
                 pieces = _split_at_blank_lines(sub_hunk)
+            else:
+                pieces = [sub_hunk]
 
             # Shift each piece past the earlier sub-hunks, and make it a Hunk.
             for piece in pieces:
@@ -645,11 +649,14 @@ def _parse_file_block(file_block: str, min_context: int, by_line: bool = False) 
     return hunks
 
 
-def parse_all_hunks(diff_text: str, min_context: int = 4, by_line: bool = False) -> list[Hunk]:
+def parse_all_hunks(
+    diff_text: str, min_context: int = 4, by_line: bool = False, split_on_blank_lines: bool = True
+) -> list[Hunk]:
     """Parse a unified diff into one hunk per temp commit.
 
     Hunks are split like `git add -p` 's', then at blank lines between
-    sibling blocks, or with *by_line* at every changed line. Each hunk's old-side offset
+    sibling blocks (unless *split_on_blank_lines* is False), or with *by_line* at
+    every changed line. Each hunk's old-side offset
     accounts for the earlier hunks in its file, so applying the hunks in
     order, each on top of the previous ones, reproduces the diff.
 
@@ -661,7 +668,7 @@ def parse_all_hunks(diff_text: str, min_context: int = 4, by_line: bool = False)
     # Each file's block runs from its "diff --git" line to the next one.
     for file_index, start in enumerate(file_starts):
         end = file_starts[file_index + 1] if file_index + 1 < len(file_starts) else len(diff_text)
-        hunks.extend(_parse_file_block(diff_text[start:end], min_context, by_line))
+        hunks.extend(_parse_file_block(diff_text[start:end], min_context, by_line, split_on_blank_lines))
     return hunks
 
 

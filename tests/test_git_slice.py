@@ -490,6 +490,18 @@ class TestParseAllHunksBlankLines:
         assert [h.line_desc for h in hunks] == ["L1-3", "L1-5"]
         assert _replay([], [h.lines for h in hunks]) == ["one\n", "1\n", "\n", "two\n", "2\n"]
 
+    def test_no_split_on_blank_lines_keeps_new_code_whole(self) -> None:
+        diff = (
+            "diff --git a/n b/n\nnew file mode 100644\n--- /dev/null\n+++ b/n\n@@ -0,0 +1,5 @@\n+one\n+1\n+\n+two\n+2\n"
+        )
+        (hunk,) = parse_all_hunks(diff, split_on_blank_lines=False)
+        assert hunk.line_desc == "L1-5"
+
+    def test_no_split_on_blank_lines_still_splits_at_context(self) -> None:
+        body = ["-x\n", "+X\n", *(f" c{i}\n" for i in range(5)), "+one\n", "+\n", "+two\n", " y\n"]
+        diff = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,7 +1,10 @@\n" + "".join(body)
+        assert len(parse_all_hunks(diff, min_context=4, split_on_blank_lines=False)) == 2
+
     def test_deleted_file_stays_whole(self) -> None:
         diff = "diff --git a/n b/n\ndeleted file mode 100644\n--- a/n\n+++ /dev/null\n@@ -1,3 +0,0 @@\n-one\n-\n-two\n"
         assert len(parse_all_hunks(diff)) == 1

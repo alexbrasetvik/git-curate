@@ -66,6 +66,14 @@ THINKING_MSGS = [
 class BaseHarness:
     """Shared scaffolding for all harnesses (temp dir lifecycle, repo root resolution)."""
 
+    def __init__(self, model: str | None = None) -> None:
+        # None leaves the choice to the harness CLI's own default.
+        self.model = model
+
+    def model_args(self) -> list[str]:
+        """Return the `--model` argument for the harness CLI, if a model was chosen."""
+        return ["--model", self.model] if self.model else []
+
     def run(self, base_sha: str) -> None:
         try:
             repo_root = sh.git("rev-parse", "--show-toplevel", _err=os.devnull).strip()
@@ -153,7 +161,17 @@ def resolve_harness_name(name: str | None) -> str:
         return "claude"
 
 
-def get_harness(name: str) -> BaseHarness:
+def resolve_model(model: str | None) -> str | None:
+    """Return *model* if given, otherwise read git config git-curate.model, else None."""
+    if model is not None:
+        return model
+    try:
+        return str(sh.git("config", "git-curate.model")).strip() or None
+    except sh.ErrorReturnCode:
+        return None
+
+
+def get_harness(name: str, model: str | None = None) -> BaseHarness:
     from .claude import ClaudeHarness
     from .pi import PiHarness
 
@@ -165,7 +183,7 @@ def get_harness(name: str) -> BaseHarness:
         available = ", ".join(registry)
         print(f"error: unknown harness {name!r}. Available: {available}", file=sys.stderr)
         raise UnknownHarnessError()
-    return registry[name]()
+    return registry[name](model)
 
 
 def load_approach() -> str:

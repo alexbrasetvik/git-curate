@@ -161,29 +161,7 @@ def _stream_events(raw_event_stream: Iterable[str]) -> None:
 
 class ClaudeHarness(BaseHarness):
     def _run(self, base_sha: str, repo_root: str, temp_dir: str, spec_path: str) -> None:
-        prompt = build_prompt(base_sha, spec_path)
-        # temp_dir starts with "/", so "/{temp_dir}" becomes "//absolute/path/**"
-        # which is the gitignore-style absolute-path pattern Claude requires.
-        file_pattern = f"/{temp_dir}/**"
-        args = [
-            "--allowedTools",
-            ",".join(
-                [
-                    "Bash(uvx git-curate *)",
-                    "Bash(git log *)",
-                    "Read",
-                    f"Write({file_pattern})",
-                    f"Edit({file_pattern})",
-                    f"Create({file_pattern})",
-                ]
-            ),
-            "--output-format",
-            "stream-json",
-            # Need --verbose when mixing stream-json and -p:
-            "--verbose",
-            "-p",
-            prompt,
-        ]
+        args = self.build_args(build_prompt(base_sha, spec_path), temp_dir)
         try:
             # _in=os.devnull: claude detects non-terminal stdin and exits cleanly
             # after the task instead of waiting for further user input.
@@ -209,3 +187,28 @@ class ClaudeHarness(BaseHarness):
                     if stream:
                         print(stream.decode(errors="replace"), file=sys.stderr, flush=True)
             raise Exit(e.exit_code) from e
+
+    def build_args(self, prompt: str, temp_dir: str) -> list[str]:
+        # temp_dir starts with "/", so "/{temp_dir}" becomes "//absolute/path/**"
+        # which is the gitignore-style absolute-path pattern Claude requires.
+        file_pattern = f"/{temp_dir}/**"
+        return [
+            "--allowedTools",
+            ",".join(
+                [
+                    "Bash(uvx git-curate *)",
+                    "Bash(git log *)",
+                    "Read",
+                    f"Write({file_pattern})",
+                    f"Edit({file_pattern})",
+                    f"Create({file_pattern})",
+                ]
+            ),
+            "--output-format",
+            "stream-json",
+            # Need --verbose when mixing stream-json and -p:
+            "--verbose",
+            *self.model_args(),
+            "-p",
+            prompt,
+        ]

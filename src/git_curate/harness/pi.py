@@ -102,15 +102,7 @@ def _stream_events(stream: Iterable[str]) -> None:
 
 class PiHarness(BaseHarness):
     def _run(self, base_sha: str, repo_root: str, temp_dir: str, spec_path: str) -> None:
-        prompt = build_prompt(base_sha, spec_path)
-        args = [
-            "--tools",
-            "read,bash,edit,write",
-            "--mode",
-            "json",
-            "-p",
-            prompt,
-        ]
+        args = self.build_args(build_prompt(base_sha, spec_path))
         try:
             proc = sh.pi(
                 *args,
@@ -125,3 +117,14 @@ class PiHarness(BaseHarness):
             raise CLINotFoundError() from e
         except sh.ErrorReturnCode as e:
             raise Exit(e.exit_code) from e
+
+    def build_args(self, prompt: str) -> list[str]:
+        return [
+            "--tools",
+            "read,bash,edit,write",
+            "--mode",
+            "json",
+            *self.model_args(),
+            "-p",
+            prompt,
+        ]

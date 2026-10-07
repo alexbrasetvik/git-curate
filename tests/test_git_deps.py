@@ -241,3 +241,38 @@ class TestBlankLineSplitDependencies:
         assert "def second" not in str(git.show("HEAD~1:funcs.py"))
 
 
+# ---------------------------------------------------------------------------
+# Slicing by line
+# ---------------------------------------------------------------------------
+
+
+class TestByLineDependencies:
+    _runner = CliRunner()
+
+    def test_adjacent_imports_regroup_in_file_order(self, git_repo: Path, tmp_path: Path) -> None:
+        f = git_repo / "mod.py"
+        f.write_text("import os\n\n\ndef main():\n    pass\n")
+        git.add(".", _cwd=git_repo)
+        git.commit("--no-verify", "-m", "add mod.py", _cwd=git_repo)
+        base = str(git("rev-parse", "HEAD")).strip()
+
+        f.write_text("import os\nimport re\nimport sys\n\n\ndef main():\n    pass\n")
+        git.add("--", "mod.py", _cwd=git_repo)
+        slice_hunks([], by_line=True)
+        commits = list_commits(base)
+
+        # Adjacent pieces conflict if reordered, so they are chained.
+        assert len(commits) == 2
+        assert compute_dependencies(base) == [Dependency(earlier_msg=commits[0].message, later_msg=commits[1].message)]
+
+        spec = [
+            {"message": "feat: re", "commits": [commits[0].message]},
+            {"message": "feat: sys", "commits": [commits[1].message]},
+        ]
+        spec_path = tmp_path / "spec.json"
+        spec_path.write_text(json.dumps(spec))
+
+        result = self._runner.invoke(app, ["group", "--spec", str(spec_path), base])
+
+        assert result.exit_code == 0, result.output
+        assert str(git.show("HEAD~1:mod.py")).startswith("import os\nimport re\n\n")

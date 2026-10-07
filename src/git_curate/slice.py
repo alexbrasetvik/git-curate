@@ -64,6 +64,9 @@ Usage
     # Stage all unstaged changes then slice:
     uvx git-curate slice --all
 
+    # One temp commit per changed line, e.g. for an import block:
+    uvx git-curate slice --lines src/auth.py
+
     # Rewrite history from an earlier commit (inclusive):
     uvx git-curate slice --from abc1234
 
@@ -1182,6 +1185,17 @@ def slice_command(
             ),
         ),
     ] = 4,
+    by_line: Annotated[
+        bool,
+        typer.Option(
+            "--lines",
+            help=(
+                "Give every changed line its own temp commit; an edited line keeps"
+                " its removed and added sides together. For small diffs, such as"
+                " import blocks, where adjacent lines belong in different commits."
+            ),
+        ),
+    ] = False,
     from_commit: Annotated[
         str | None,
         typer.Option(
@@ -1211,7 +1225,7 @@ def slice_command(
         return
 
     print("Slicing hunks into atomic commits...\n")
-    n = slice_hunks(paths, min_context=split_context)
+    n = slice_hunks(paths, min_context=split_context, by_line=by_line)
 
     if n == 0:
         print("Nothing to slice — staged diff is empty.")

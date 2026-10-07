@@ -22,6 +22,8 @@ Used by agents to author logical git commits with this process:
 
 Use `uv`, i.e. `uv run python ...` not `python ...`.
 
+Invoke subprocesses with `sh`, not the `subprocess` module. This includes streaming input to long-running commands such as `git fast-import`.
+
 Tool changes must have tests.
 
 Tests and quality checks must all pass to consider a change done.

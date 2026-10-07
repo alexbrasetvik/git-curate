@@ -23,7 +23,7 @@ from typing import Annotated
 
 import typer
 
-from .common import SubApp, git, resolve_base
+from .common import SHA_DISPLAY_LEN, SubApp, git, resolve_base
 
 app = SubApp()
 
@@ -51,6 +51,6 @@ def log_command(
 
     n = len(lines)
     commit_suffix = "s" if n != 1 else ""
-    print(f"{n} commit{commit_suffix} since {base[:12]}:\n")
+    print(f"{n} commit{commit_suffix} since {base[:SHA_DISPLAY_LEN]}:\n")
     for i, msg in enumerate(lines, 1):
         print(f"  {i}. {msg}")

@@ -93,7 +93,7 @@ from typing import Annotated
 import sh
 import typer
 
-from .common import Exit, SliceError, SubApp, curate_git, git, resolve_rewrite_from
+from .common import SHA_DISPLAY_LEN, Exit, SliceError, SubApp, curate_git, git, resolve_rewrite_from
 
 app = SubApp()
 
@@ -1115,7 +1115,7 @@ def _apply_from_squash(from_commit: str) -> None:
     """
     parent_sha = resolve_rewrite_from(from_commit)
     git("reset", "--soft", parent_sha)
-    print(f"Reset HEAD to {parent_sha[:12]} (squashed {from_commit!r}..HEAD into staging)\n")
+    print(f"Reset HEAD to {parent_sha[:SHA_DISPLAY_LEN]} (squashed {from_commit!r}..HEAD into staging)\n")
 
 
 def _ensure_staged_or_stage_all(paths: list[str], all_changes: bool) -> None:

@@ -7,7 +7,17 @@ import sys
 import sh
 import typer
 
-from .common import SHA_DISPLAY_LEN, Exit, abort_session, count_commits_since, git, resolve_base, resolve_rewrite_from
+from .common import (
+    SHA_DISPLAY_LEN,
+    Exit,
+    abort_session,
+    clear_failed_attempt,
+    count_commits_since,
+    git,
+    load_failed_attempt,
+    resolve_base,
+    resolve_rewrite_from,
+)
 from .harness import get_harness, resolve_harness_name
 from .slice import slice_hunks
 
@@ -265,6 +275,54 @@ def _warn_if_session_leftover() -> None:
         )
 
 
+def _handle_failed_attempt(base_sha: str, yes: bool) -> bool:
+    """After the harness exits, offer to reuse a failed grouping attempt.
+
+    The harness's context is gone once it exits, but its spec is saved under
+    the git dir.  Returns True if the caller should run the harness again,
+    which starts from that saved spec.
+
+    Keeps the spec without asking under --yes or without a terminal.
+    """
+    if resolve_base() != base_sha:
+        return False  # grouping succeeded after all, or the session changed
+
+    attempt = load_failed_attempt(base_sha)
+    if attempt is None:
+        return False
+
+    # Show the tail of the failure; the full output is in the prompt of a retry.
+    last_lines = "\n".join(attempt.output.strip().splitlines()[-5:])
+    print(f"\nGrouping failed; the temp commits are unchanged.\n{last_lines}\n", file=sys.stderr)
+    keep_msg = (
+        f"Kept the spec at {attempt.path}.\n"
+        "  Resume with the AI (it revises this spec): git-curate --resume\n"
+        f"  Or edit it and run:                        git-curate group --spec {attempt.path} --keep-spec"
+    )
+
+    # Without a terminal there's no one to ask, so keep the spec.
+    if yes or not sys.stdin.isatty():
+        print(keep_msg, file=sys.stderr)
+        return False
+
+    # Ask until the answer is one of the choices.
+    print("  [r] Retry   — run the AI again, starting from the saved spec")
+    print("  [k] Keep    — keep the spec for later")
+    print("  [d] Discard — delete the spec (temp commits stay)\n")
+    while True:
+        choice = typer.prompt("Choice [r/k/d]", default="r").strip().lower()
+        if choice in ("r", "k", "d"):
+            break
+
+    if choice == "r":
+        return True
+    if choice == "k":
+        print(keep_msg, file=sys.stderr)
+    else:
+        clear_failed_attempt()
+    return False
+
+
 # ── Main entry point ─────────────────────────────────────────────────────────
 
 
@@ -320,7 +378,11 @@ def curate(
         print(f"Harness: {resolved} (dry-run, not invoked)")
         return
 
-    print(f"Invoking {resolved} harness (base: {base_sha[:SHA_DISPLAY_LEN]})…")
-    get_harness(resolved).run(base_sha)
+    harness = get_harness(resolved)
+    while True:
+        print(f"Invoking {resolved} harness (base: {base_sha[:SHA_DISPLAY_LEN]})…")
+        harness.run(base_sha)
+        if not _handle_failed_attempt(base_sha, yes):
+            break
 
     _warn_if_session_leftover()

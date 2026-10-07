@@ -10,7 +10,7 @@ import tempfile
 import sh
 from rich.console import Console
 
-from ..common import NotInGitRepoError, UnknownHarnessError
+from ..common import NotInGitRepoError, UnknownHarnessError, load_failed_attempt
 
 console = Console()
 
@@ -72,11 +72,19 @@ class BaseHarness:
         except sh.ErrorReturnCode as e:
             print("error: not inside a git repository", file=sys.stderr)
             raise NotInGitRepoError() from e
+
         raw_dir = tempfile.mkdtemp(prefix="git-curate-")
         # Resolve symlinks (macOS /tmp → /private/tmp) so the realpath matches
         # what the Write tool sees.
         temp_dir = os.path.realpath(raw_dir)
         spec_path = os.path.join(temp_dir, "spec.json")
+
+        # Start from a previously failed spec, if any, so the agent revises it
+        # in place (it may only edit files under temp_dir).
+        previous = load_failed_attempt(base_sha)
+        if previous is not None:
+            shutil.copyfile(previous.path, spec_path)
+
         try:
             self._run(base_sha, repo_root, temp_dir, spec_path)
         finally:
@@ -102,6 +110,17 @@ def build_prompt(base_sha: str, spec_path: str) -> str:
             lines.append(f'- "{d.earlier_msg}" must precede "{d.later_msg}"')
         constraint_lines = "\n".join(lines) + "\n"
 
+    previous_lines = ""
+    previous = load_failed_attempt(base_sha)
+    if previous is not None:
+        previous_lines = (
+            "\nA previous grouping attempt failed; the rebase was aborted and the temp\n"
+            "commits are unchanged. The spec path already contains that attempt's spec.\n"
+            "Revise it rather than regrouping from scratch; a failure usually means two\n"
+            "commits touching the same lines were put in the wrong order.\n\n"
+            f"Failure output:\n```\n{previous.output.strip()}\n```\n"
+        )
+
     # A mechanical check and input checks whether any staged changes need slicing first, so
     # when we get to this point, the agent can assume everything has been sliced and not ask
     # about doing so.
@@ -120,6 +139,7 @@ def build_prompt(base_sha: str, spec_path: str) -> str:
         f"Base: {base_sha}\n"
         f"Spec path: {spec_path}\n"
         f"{constraint_lines}"
+        f"{previous_lines}"
     )
 
 

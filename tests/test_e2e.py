@@ -9,9 +9,17 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from git_curate import run
 from git_curate.cli import app
-from git_curate.common import CURATE_AUTHOR_EMAIL, git, list_commits, resolve_base
-from git_curate.harness import BaseHarness
+from git_curate.common import (
+    CURATE_AUTHOR_EMAIL,
+    git,
+    list_commits,
+    load_failed_attempt,
+    resolve_base,
+    save_failed_attempt,
+)
+from git_curate.harness import BaseHarness, build_prompt
 from git_curate.harness.claude import ClaudeHarness
 from git_curate.harness.pi import PiHarness
 from git_curate.slice import slice_hunks
@@ -94,3 +102,66 @@ def test_pi_harness(staged_repo: Path) -> None:
     PiHarness().run(base_sha)
 
     _assert_session_complete()
+
+
+# ---------------------------------------------------------------------------
+# Reusing a failed grouping attempt
+# ---------------------------------------------------------------------------
+
+
+class SpySeedHarness(BaseHarness):
+    """Records what the spec path held when the agent would have started."""
+
+    seen: str | None = None
+
+    def _run(self, base_sha: str, repo_root: str, temp_dir: str, spec_path: str) -> None:
+        SpySeedHarness.seen = Path(spec_path).read_text() if Path(spec_path).exists() else None
+
+
+def _failed_session(staged_repo: Path) -> str:
+    slice_hunks(paths=[])
+    base_sha = resolve_base()
+    assert base_sha is not None
+    save_failed_attempt(base_sha, '[{"message": "m", "commits": []}]', "CONFLICT (content): Merge conflict in x.py")
+    return base_sha
+
+
+def test_harness_starts_from_failed_spec(staged_repo: Path) -> None:
+    base_sha = _failed_session(staged_repo)
+    SpySeedHarness().run(base_sha)
+    assert SpySeedHarness.seen == '[{"message": "m", "commits": []}]'
+
+
+def test_prompt_includes_failure_after_static_prefix(staged_repo: Path) -> None:
+    base_sha = _failed_session(staged_repo)
+    prompt = build_prompt(base_sha, "/tmp/spec.json")
+    assert "CONFLICT (content): Merge conflict in x.py" in prompt
+    assert prompt.index("Base: ") < prompt.index("A previous grouping attempt failed")
+
+
+@pytest.mark.parametrize(
+    "choice, retry, kept",
+    [("r", True, True), ("k", False, True), ("d", False, False)],
+    ids=["retry", "keep", "discard"],
+)
+def test_failed_attempt_prompt(
+    staged_repo: Path, monkeypatch: pytest.MonkeyPatch, choice: str, retry: bool, kept: bool
+) -> None:
+    base_sha = _failed_session(staged_repo)
+    # Pretend to be interactive and answer the prompt with *choice*.
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("typer.prompt", lambda *a, **kw: choice)
+
+    assert run._handle_failed_attempt(base_sha, yes=False) is retry
+    assert (load_failed_attempt(base_sha) is not None) is kept
+
+
+def test_failed_attempt_kept_without_prompt_under_yes(staged_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    base_sha = _failed_session(staged_repo)
+
+    def _no_prompt(*a: object, **kw: object) -> str:
+        raise AssertionError("prompted under --yes")
+
+    monkeypatch.setattr("typer.prompt", _no_prompt)
+    assert run._handle_failed_attempt(base_sha, yes=True) is False
+    assert load_failed_attempt(base_sha) is not None

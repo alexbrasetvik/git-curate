@@ -20,9 +20,26 @@ app.add_typer(status_app, name="status")
 app.add_typer(abort_app, name="abort")
 
 
+def _print_version(value: bool) -> None:
+    if value:
+        from .version import version_string
+
+        typer.echo(version_string())
+        raise typer.Exit()
+
+
 @app.callback(invoke_without_command=True)
 def default(
     ctx: typer.Context,
+    _version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            is_eager=True,
+            callback=_print_version,
+            help="Print the version and git commit, then exit.",
+        ),
+    ] = False,
     rewrite_from: Annotated[
         str | None,
         typer.Option(

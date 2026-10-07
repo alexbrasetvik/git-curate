@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 
@@ -128,14 +127,10 @@ def resolve_harness_name(name: str | None) -> str:
     """Return *name* if given, otherwise read git config git-curate.harness, else 'claude'."""
     if name is not None:
         return name
-    result = subprocess.run(
-        ["git", "config", "git-curate.harness"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0:
-        return result.stdout.strip()
-    return "claude"
+    try:
+        return str(sh.git("config", "git-curate.harness")).strip()
+    except sh.ErrorReturnCode:
+        return "claude"
 
 
 def get_harness(name: str) -> BaseHarness:

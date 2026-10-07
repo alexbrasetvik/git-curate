@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -68,3 +69,23 @@ def test_no_model_arg_by_default() -> None:
     assert "--model" not in PiHarness().build_args("prompt")
 
 
+@pytest.mark.parametrize("harness_cls", [ClaudeHarness, PiHarness])
+def test_failing_cli_exits_without_thread_traceback(
+    harness_cls: type[ClaudeHarness | PiHarness], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Stand in for the real CLI with one that fails the way pi does without credentials.
+    name = "claude" if harness_cls is ClaudeHarness else "pi"
+    fake = tmp_path / "bin" / name
+    fake.parent.mkdir()
+    fake.write_text("#!/bin/sh\necho 'No API key found' >&2\nexit 1\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake.parent}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(f"git_curate.harness.{name}.build_prompt", lambda base_sha, spec_path: "prompt")
+
+    thread_errors: list[BaseException | None] = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: thread_errors.append(args.exc_value))
+
+    with pytest.raises(Exit) as exc_info:
+        harness_cls()._run("base", str(tmp_path), str(tmp_path), str(tmp_path / "spec.json"))
+    assert exc_info.value.code == 1
+    assert thread_errors == []

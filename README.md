@@ -46,6 +46,8 @@ Run `uvx git-curate` or `git curate` with no options to run the full workflow:
 - Claude Code or pi groups those commits into logical units.
 - `uvx git-curate group` squashes them into the final commits.
 
+Pick the harness with `--harness claude` or `--harness pi`, and its model with `--model`, e.g. `git curate --model=opus`. To set defaults, use `git config git-curate.harness` and `git config git-curate.model`. Without a model set, the harness uses its own default.
+
 ### Slicing
 
 `slice` creates one commit per hunk, for `group` to later squash.

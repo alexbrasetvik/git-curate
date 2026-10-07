@@ -18,7 +18,7 @@ from .common import (
     resolve_base,
     resolve_rewrite_from,
 )
-from .harness import get_harness, resolve_harness_name
+from .harness import get_harness, resolve_harness_name, resolve_model
 from .slice import slice_hunks
 
 # ── Low-level git helpers ────────────────────────────────────────────────────
@@ -336,6 +336,7 @@ def curate(
     all_changes: bool,
     resume: bool = False,
     restart: bool = False,
+    model: str | None = None,
 ) -> None:
     existing_base = resolve_base()
 
@@ -372,15 +373,17 @@ def curate(
     # Hand off to the AI harness that groups the temp commits into logical
     # commits and writes the final commit messages.
     resolved = resolve_harness_name(harness_name)
+    resolved_model = resolve_model(model)
+    model_note = f", model: {resolved_model}" if resolved_model else ""
 
     if dry_run:
         print(f"Base: {base_sha}")
-        print(f"Harness: {resolved} (dry-run, not invoked)")
+        print(f"Harness: {resolved}{model_note} (dry-run, not invoked)")
         return
 
-    harness = get_harness(resolved)
+    harness = get_harness(resolved, resolved_model)
     while True:
-        print(f"Invoking {resolved} harness (base: {base_sha[:SHA_DISPLAY_LEN]})…")
+        print(f"Invoking {resolved} harness (base: {base_sha[:SHA_DISPLAY_LEN]}{model_note})…")
         harness.run(base_sha)
         if not _handle_failed_attempt(base_sha, yes):
             break

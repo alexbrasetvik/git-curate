@@ -52,6 +52,15 @@ def default(
         str | None,
         typer.Option(help="AI harness to invoke for grouping (default: git config git-curate.harness, or claude)."),
     ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            help=(
+                "Model for the AI harness, e.g. opus or sonnet "
+                "(default: git config git-curate.model, or the harness's own default)."
+            ),
+        ),
+    ] = None,
     dry_run: Annotated[
         bool,
         typer.Option("--dry-run", help="Slice only; do not invoke the AI harness."),
@@ -80,6 +89,7 @@ def default(
         rewrite_branch=rewrite_branch,
         yes=yes,
         harness_name=harness,
+        model=model,
         dry_run=dry_run,
         all_changes=all_changes,
         resume=resume,

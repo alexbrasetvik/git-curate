@@ -26,9 +26,10 @@ This script is Phase 1 of three:
 Algorithm (Phase 1)
 -------------------
   1. Run `git diff --cached -U3` on the index (or specified files).
-  2. Parse every hunk, splitting hunks like `git add -p` 's', then at blank
-     lines between sibling blocks of added or removed lines. Each hunk's
-     old-side offset accounts for the earlier hunks in its file, so hunk k
+  2. Parse every hunk, splitting hunks like `git add -p` 's', then (unless
+     --no-split-on-blank-lines) at blank lines between sibling blocks of
+     added or removed lines. Each hunk's old-side offset accounts for the
+     earlier hunks in its file, so hunk k
      applies on top of hunks 1..k-1. Any rename or mode change rides along
      with a file's first hunk.
   3. Load HEAD's version of every touched file, apply the hunks to them in
@@ -63,6 +64,9 @@ Usage
 
     # Stage all unstaged changes then slice:
     uvx git-curate slice --all
+
+    # Keep blocks of new code separated only by blank lines together:
+    uvx git-curate slice --no-split-on-blank-lines src/auth.py
 
     # One temp commit per changed line, e.g. for an import block:
     uvx git-curate slice --lines src/auth.py
@@ -1041,7 +1045,9 @@ def _commit_hunks(hunks: list[Hunk], messages: list[str], head_sha: str) -> str:
     return tip
 
 
-def slice_hunks(paths: list[str], min_context: int = 4, by_line: bool = False) -> int:
+def slice_hunks(
+    paths: list[str], min_context: int = 4, by_line: bool = False, split_on_blank_lines: bool = True
+) -> int:
     """Decompose the staged diff into one commit per hunk, or with *by_line* per changed line.
 
     HEAD moves once, after all temp commits exist and match the index, so HEAD
@@ -1054,7 +1060,7 @@ def slice_hunks(paths: list[str], min_context: int = 4, by_line: bool = False) -
     except sh.ErrorReturnCode:
         return 0
 
-    hunks = parse_all_hunks(diff_text, min_context, by_line)
+    hunks = parse_all_hunks(diff_text, min_context, by_line, split_on_blank_lines)
     if not hunks:
         return 0
 
@@ -1203,6 +1209,16 @@ def slice_command(
             ),
         ),
     ] = False,
+    split_on_blank_lines: Annotated[
+        bool,
+        typer.Option(
+            "--split-on-blank-lines/--no-split-on-blank-lines",
+            help=(
+                "Split runs of added or removed lines at blank lines between sibling"
+                " blocks. Turn off to keep new code together and get fewer temp commits."
+            ),
+        ),
+    ] = True,
     from_commit: Annotated[
         str | None,
         typer.Option(
@@ -1232,7 +1248,7 @@ def slice_command(
         return
 
     print("Slicing hunks into atomic commits...\n")
-    n = slice_hunks(paths, min_context=split_context, by_line=by_line)
+    n = slice_hunks(paths, min_context=split_context, by_line=by_line, split_on_blank_lines=split_on_blank_lines)
 
     if n == 0:
         print("Nothing to slice — staged diff is empty.")

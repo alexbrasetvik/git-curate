@@ -954,6 +954,17 @@ class TestSliceCommand:
         log = str(git.log("--oneline", _cwd=git_repo))
         assert "temp:" not in log
 
+    def test_no_split_on_blank_lines_commits_new_file_whole(self, git_repo: Path) -> None:
+        (git_repo / "n.py").write_text("def f():\n    pass\n\n\ndef g():\n    pass\n")
+        git.add("n.py", _cwd=git_repo)
+        base = str(git("rev-parse", "HEAD", _cwd=git_repo)).strip()
+
+        slice_command(
+            paths=[], dry_run=False, all_changes=False, split_context=4, split_on_blank_lines=False, from_commit=None
+        )
+
+        assert str(git("rev-list", "--count", f"{base}..HEAD", _cwd=git_repo)).strip() == "1"
+
     def test_partial_staging_allowed(self, git_repo: Path, commit_test_file: Callable[[str, str], None]) -> None:
         # File with both staged and unstaged changes — the slicer should commit
         # only the staged portion and leave the working tree untouched.

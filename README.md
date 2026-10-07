@@ -4,6 +4,8 @@ git-curate lets an AI agent commit at diff hunk granularity. A single file can p
 
 `git add -p / --patch` does this interactively. git-curate does it for agents.
 
+![How git-curate works](./git-curate.excalidraw.svg)
+
 ## Logical commits are easier to understand
 
 Reviewers need to know what changed and why. Focused commits answer that; large blobs don't.

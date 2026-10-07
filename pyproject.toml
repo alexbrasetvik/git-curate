@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "sh"]
 build-backend = "hatchling.build"
 
 [project]
@@ -14,6 +14,8 @@ git-curate = "git_curate.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/git_curate"]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

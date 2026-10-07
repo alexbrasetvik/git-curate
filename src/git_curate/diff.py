@@ -7,7 +7,10 @@ and no other formatting — ready to pipe to a model or script.
 
 Without an explicit base, resolve_base() finds the first non-curate commit
 walking back from HEAD. With no active session and no explicit base, the
-command exits silently.
+command prints a notice to stderr and exits successfully.
+
+With --tmp, the diff goes to .git/git-curate-diff.patch and the command
+prints "<path> <line-count>" instead.
 
 Usage:
 ------
@@ -17,6 +20,9 @@ Usage:
     # Explicit base ref or SHA
     uvx git-curate diff main
     uvx git-curate diff a1b2c3d
+
+    # Write to .git/git-curate-diff.patch, print its path and line count
+    uvx git-curate diff --tmp
 """
 
 from __future__ import annotations
@@ -47,7 +53,7 @@ def diff_command(
         bool,
         typer.Option(
             "--tmp",
-            help="Write diff to a temp file and print its path instead of stdout.",
+            help="Write the diff to .git/git-curate-diff.patch and print its path and line count instead.",
         ),
     ] = False,
 ) -> None:

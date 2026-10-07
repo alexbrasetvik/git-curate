@@ -158,6 +158,19 @@ class TestSplitHunk:
         lines = self._make_hunk(["+change1\n", " ctx1\n", " ctx2\n", "+change2\n"])
         assert _split_hunk(lines, min_context=3) is None
 
+    def test_no_split_at_no_newline_marker(self) -> None:
+        # Editing a last line that lacks a newline puts a marker between - and +.
+        lines = self._make_hunk(
+            [
+                " k\n",
+                "-l\n",
+                "\\ No newline at end of file\n",
+                "+L\n",
+                "\\ No newline at end of file\n",
+            ]
+        )
+        assert _split_hunk(lines, min_context=1) is None
+
     def test_splits_at_sufficient_context_run(self) -> None:
         lines = self._make_hunk(
             [

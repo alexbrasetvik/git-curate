@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "git-curate"
 version = "0.1.0"
-description = "Slice unstaged changes into atomic commits, then group them into logical final commits"
+description = "Slice staged changes into atomic commits, then group them into logical final commits"
 requires-python = ">=3.11"
 dependencies = ["sh", "typer", "rich"]
 

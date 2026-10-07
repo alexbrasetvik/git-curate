@@ -81,6 +81,7 @@ import sh
 import typer
 
 from .common import (
+    GIT_ENV,
     SHA_DISPLAY_LEN,
     Commit,
     InvalidSpecError,
@@ -297,8 +298,7 @@ def execute_rebase(
     # git runs the sequence editor on its todo; ours swaps in the plan.
     seq_script = os.path.join(msg_dir, "sequence-editor.sh")
     write_sequence_editor_script(todo_lines, seq_script)
-    env = os.environ.copy()
-    env["GIT_SEQUENCE_EDITOR"] = os.path.abspath(seq_script)
+    env = {**GIT_ENV, "GIT_SEQUENCE_EDITOR": os.path.abspath(seq_script)}
 
     try:
         result = git.rebase(

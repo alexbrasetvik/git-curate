@@ -73,6 +73,10 @@ class EnvOverlay(Mapping[str, str]):
         return len(os.environ.keys() | self.overrides.keys())
 
 
+# Git's messages are translated (and their wording changes across versions);
+# the C locale keeps the ones we surface and match on in English.
+GIT_ENV = EnvOverlay({"LC_ALL": "C"})
+
 git = sh.git.bake(
     # We care about diff quality over speed:
     "-c",
@@ -101,6 +105,7 @@ git = sh.git.bake(
     "-c",
     "commit.gpgSign=false",
     _tty_out=False,
+    _env=GIT_ENV,
 )
 
 # We identify our commits based on author, and not e.g. git commit message prefixes
@@ -113,11 +118,13 @@ SHA_DISPLAY_LEN = 12
 # git reads GIT_AUTHOR_* from the environment, not from -c flags.
 # slice.py uses this for the author ident of temp commits.
 curate_git = git.bake(
-    _env={
-        **os.environ,
-        "GIT_AUTHOR_NAME": CURATE_AUTHOR_NAME,
-        "GIT_AUTHOR_EMAIL": CURATE_AUTHOR_EMAIL,
-    }
+    _env=EnvOverlay(
+        {
+            **GIT_ENV.overrides,
+            "GIT_AUTHOR_NAME": CURATE_AUTHOR_NAME,
+            "GIT_AUTHOR_EMAIL": CURATE_AUTHOR_EMAIL,
+        }
+    )
 )
 
 

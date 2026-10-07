@@ -340,7 +340,7 @@ def curate(
 ) -> None:
     existing_base = resolve_base()
 
-    # ── Phase 1: Pre-flight ──────────────────────────────────────────────────
+    # ── Step 1: Pre-flight ───────────────────────────────────────────────────
     # Validate flags, ensure there is something to do, and resolve any conflict
     # between an in-progress session and newly staged changes.
     # Skipped entirely when a rewrite was requested; rewrites handle their own
@@ -348,7 +348,7 @@ def curate(
     if rewrite_from is None and rewrite_branch is None:
         existing_base = _handle_preflight(existing_base, resume, restart, all_changes)
 
-    # ── Phase 2: Rewrite (optional) ──────────────────────────────────────────
+    # ── Step 2: Rewrite (optional) ───────────────────────────────────────────
     # If the user asked to squash a commit range, soft-reset HEAD to the
     # merge-base so all those commits become staged changes again.
     # We then clear existing_base to force the slice step below.
@@ -356,7 +356,7 @@ def curate(
         _run_rewrite(rewrite_from, rewrite_branch, existing_base, yes)
         existing_base = None  # the staged changes from the reset must be re-sliced
 
-    # ── Phase 3: Slice ───────────────────────────────────────────────────────
+    # ── Step 3: Slice ────────────────────────────────────────────────────────
     # Split staged changes into one temp commit per hunk.
     # Skipped when continuing an existing session (existing_base is not None),
     # because the temp commits from the previous run are still intact.
@@ -369,7 +369,7 @@ def curate(
         print("error: no active git-curate session after slicing", file=sys.stderr)
         raise typer.Exit(1)
 
-    # ── Phase 4: Harness ─────────────────────────────────────────────────────
+    # ── Step 4: Harness ──────────────────────────────────────────────────────
     # Hand off to the AI harness that groups the temp commits into logical
     # commits and writes the final commit messages.
     resolved = resolve_harness_name(harness_name)

@@ -14,7 +14,7 @@ Existing tools stage whole files (`git add <file>`). They can't drive `git add -
 
 ## How it works
 
-The workflow has three phases:
+The workflow has three steps:
 
 1. **Slice**: `git-curate slice` creates one temporary commit per diff hunk, with no reasoning. Hunks are split the way `git add -p`'s `s` command splits them, and also at blank lines between sibling blocks of added or removed lines, such as two new functions.
 2. **Group** (AI): an AI agent reads the commit diffs and decides which hunks belong together, producing a JSON grouping spec.

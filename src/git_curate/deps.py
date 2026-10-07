@@ -1,7 +1,7 @@
 """Hunk-overlap dependency detection between temp commits.
 
 When multiple slice sessions precede a single curate, two temp commits can
-touch the same lines in the same file.  Reordering them during the group phase
+touch the same lines in the same file.  Reordering them during the group step
 causes a rebase conflict.  This module detects such pairs and expresses them as
 explicit ordering constraints so the AI agent and the group validator can both
 act on them.

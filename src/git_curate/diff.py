@@ -1,6 +1,6 @@
 """
-Phase 2 helper: emit the unformatted diff for grouping
-=======================================================
+Step 2 helper: emit the unformatted diff for grouping
+======================================================
 
 Prints `git log -p` from a base ref to HEAD, with no pager, no colour,
 and no other formatting — ready to pipe to a model or script.

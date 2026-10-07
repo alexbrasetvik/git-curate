@@ -1,30 +1,30 @@
 """
-Phase 1: Hunk-level commit decomposition
-=========================================
+Step 1: Hunk-level commit decomposition
+========================================
 
 Problem
 -------
 AI agents can stage whole files (git add) but cannot drive git add -p.
 They produce large file-level commits where you want many small, logical ones.
 
-Three-phase approach
---------------------
-This script is Phase 1 of three:
+Three-step approach
+-------------------
+This script is Step 1 of three:
 
-  Phase 1 (this slice tool, mechanical):
+  Step 1 (this slice tool, mechanical):
     Decomposes all staged changes into one atomic commit per diff hunk.
 
-  Phase 2 (AI agent):
+  Step 2 (AI agent):
     Reads the N temp commits and decides which hunks belong together
     (e.g. "commits 1-5 → feat: auth, 6-12 → refactor: schema,
     13-15 → test: auth"). Outputs a grouping spec (JSON).
 
-  Phase 3 (group tool, mechanical):
+  Step 3 (group tool, mechanical):
     Executes the rebase plan non-interactively via GIT_SEQUENCE_EDITOR,
     collapsing the temp commits into clean final commits.
 
-Algorithm (Phase 1)
--------------------
+Algorithm (Step 1)
+------------------
   1. Run `git diff --cached -U3` on the index (or specified files).
   2. Parse every hunk, splitting hunks like `git add -p` 's', then (unless
      --no-split-on-blank-lines) at blank lines between sibling blocks of

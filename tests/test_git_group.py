@@ -241,6 +241,38 @@ class TestExecuteRebase:
         assert "line1 = 999" in f.read_text()
         assert "line28 = 999" in f.read_text()
 
+    def test_reordering_past_a_move_ignores_directory_renames(self, git_repo: Path) -> None:
+        # Moving old/a.py to new/a.py, then adding new/lib.py while old/lib.py
+        # exists.  Picking the add before the move makes the merge base
+        # (original parent) have new/a.py and HEAD have old/a.py, which git's
+        # directory-rename detection reads as new/ -> old/ and so tries to put
+        # new/lib.py at old/lib.py — an "implicit dir rename" conflict.
+        (git_repo / "old").mkdir()
+        (git_repo / "old" / "a.py").write_text("".join(f"a{i} = {i}\n" for i in range(20)))
+        (git_repo / "old" / "lib.py").write_text("old_lib = True\n")
+        git.add(".", _cwd=git_repo)
+        git.commit("--no-verify", "-m", "add old/", _cwd=git_repo)
+        base = str(git("rev-parse", "HEAD")).strip()
+
+        (git_repo / "new").mkdir()
+        git.mv("old/a.py", "new/a.py", _cwd=git_repo)
+        git.commit("--no-verify", "-m", "temp: move a.py", _cwd=git_repo)
+        (git_repo / "new" / "lib.py").write_text("new_lib = True\n")
+        git.add(".", _cwd=git_repo)
+        git.commit("--no-verify", "-m", "temp: add new/lib.py", _cwd=git_repo)
+
+        commits = list_commits(base)
+        groups = [
+            Group(message="feat: new lib", commits=["temp: add new/lib.py"]),
+            Group(message="refactor: move a.py", commits=["temp: move a.py"]),
+        ]
+        execute_rebase(base, build_rebase_plan(commits, groups))
+
+        log = str(git.log("--format=%s", f"{base}..HEAD")).strip().splitlines()
+        assert log == ["refactor: move a.py", "feat: new lib"]
+        assert (git_repo / "new" / "lib.py").read_text() == "new_lib = True\n"
+        assert (git_repo / "old" / "lib.py").read_text() == "old_lib = True\n"
+
     def test_ungrouped_commits_preserved(self, git_repo: Path) -> None:
         base = self._setup_temp_commits(git_repo, n=2)
         commits = list_commits(base)

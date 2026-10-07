@@ -28,8 +28,8 @@ class Dependency:
 def parse_hunk_range(message: str) -> tuple[str, int, int] | None:
     """Return ``(file_path, start_line, end_line)`` from a temp commit message.
 
-    Returns ``None`` for non-temp commits (e.g. real commits left in the range
-    after ``--from`` rewrites).
+    Returns ``None`` for non-temp commits (e.g. real commits in the range when
+    an explicit base is given).
     """
     m = TEMP_MSG_RE.match(message)
     if not m:

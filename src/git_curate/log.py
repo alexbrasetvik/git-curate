@@ -2,9 +2,9 @@
 Session commit log
 ==================
 
-Lists temp commits since a base commit, oldest first. Without a base,
+Lists commit subjects since a base commit, oldest first. Without a base,
 auto-detects from the active session. With no active session and no base,
-exits silently.
+says so and exits successfully.
 
 Intended for agent usage, without granting them full git access.
 

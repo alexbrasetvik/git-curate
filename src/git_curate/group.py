@@ -385,9 +385,8 @@ def _check_ordering_constraints(
 ) -> None:
     """Raise InvalidSpecError if the rebase plan reverses any ordering constraint.
 
-    *deps* is a list of ``Dependency`` objects (imported lazily to avoid a
-    circular import with deps.py).  Each constraint says that ``earlier_msg``
-    must appear before ``later_msg`` in the rebase plan.
+    *deps* is a list of ``deps.Dependency`` objects.  Each constraint says
+    that ``earlier_msg`` must appear before ``later_msg`` in the rebase plan.
     """
     # Build SHA → plan position from pick/fixup lines only.
     sha_order: dict[str, int] = {}

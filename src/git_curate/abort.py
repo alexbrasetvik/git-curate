@@ -5,7 +5,7 @@ Abort a git-curate session
 Resets HEAD to the session base, removing all temp commits slice created.
 Leaves changes unstaged in the working tree.
 
-With no active session, exits silently.
+With no active session, says so and exits successfully.
 
 Usage:
 ------

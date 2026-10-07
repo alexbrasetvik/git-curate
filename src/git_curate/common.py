@@ -6,7 +6,7 @@ import functools
 import os
 import shutil
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -48,6 +48,29 @@ class SubApp(typer.Typer):
             return parent_decorator(wrapper)  # type: ignore[return-value]
 
         return decorator
+
+
+class EnvOverlay(Mapping[str, str]):
+    """os.environ with fixed overrides on top, read when a command runs.
+
+    sh's _env replaces the whole environment, so each bake needs the full
+    set. Reading os.environ lazily (rather than copying it at import) keeps
+    later changes to it, such as monkeypatch.setenv in tests, visible to git.
+    """
+
+    def __init__(self, overrides: Mapping[str, str]) -> None:
+        self.overrides = dict(overrides)
+
+    def __getitem__(self, key: str) -> str:
+        if key in self.overrides:
+            return self.overrides[key]
+        return os.environ[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter({**os.environ, **self.overrides})
+
+    def __len__(self) -> int:
+        return len(os.environ.keys() | self.overrides.keys())
 
 
 git = sh.git.bake(

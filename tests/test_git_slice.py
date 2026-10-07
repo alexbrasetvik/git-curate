@@ -947,7 +947,7 @@ class TestSliceErrors:
         self._assert_untouched(head)
 
     def test_fast_import_failure_is_reported(self, git_repo: Path) -> None:
-        with pytest.raises(SliceError, match="git fast-import failed: .*Unsupported command: bogus"):
+        with pytest.raises(SliceError, match="git fast-import failed: .*[Uu]nsupported command: bogus"):
             slice_mod._run_fast_import(iter([b"bogus\n"]))
 
     def test_stream_error_ends_fast_import_without_done(self, git_repo: Path) -> None:

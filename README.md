@@ -93,32 +93,34 @@ The spec is an ordered list of groups. Order determines the final commit order:
   {
     "message": "Rename calculate() to compute()\n\nUpdates the method definition, all call sites, and tests.",
     "commits": [
-      "temp: src/math.py:L10-12",
-      "temp: src/math.py:L45-45",
-      "temp: tests/test_math.py:L8-8"
+      "temp: src/math.py:L10-12 #3f2a9c1e-1",
+      "temp: src/math.py:L45-45 #b7d04e52-2",
+      "temp: tests/test_math.py:L8-8 #0c9e7a13-3"
     ]
   },
   {
     "message": "Add overflow guard to compute()",
     "commits": [
-      "temp: src/math.py:L13-18"
+      "temp: src/math.py:L13-18 #5e81d2fa-4"
     ]
   }
 ]
 ```
 
-`group` leaves any `temp:` commit not in the spec as-is. Non-`temp:` commits pass through unchanged.
+Commits are referenced by their full message, which must match exactly. `group` leaves any `temp:` commit not in the spec as-is. Non-`temp:` commits pass through unchanged.
 
 Execute the spec:
 
 ```bash
-uvx git-curate group .git/git-curate-spec.json
+uvx git-curate group --spec .git/git-curate-spec.json
 ```
 
-Verify the result:
+`group` deletes the spec file on success; pass `--keep-spec` to keep it.
+
+Verify the result, using the base SHA that `uvx git-curate status` printed before grouping:
 
 ```bash
-git log refs/git-curate/base..HEAD
+uvx git-curate log <base>
 ```
 
 ## Architecture

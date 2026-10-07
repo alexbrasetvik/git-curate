@@ -14,21 +14,22 @@ Grouping spec format (JSON file or stdin):
         {
             "message": "feat: add auth endpoint",
             "commits": [
-                "temp: src/auth.py:L1-15",
-                "temp: src/auth.py:L20-30",
-                "temp: tests/test_auth.py:L1-10"
+                "temp: src/auth.py:L1-15 #3f2a9c1e-1",
+                "temp: src/auth.py:L20-30 #b7d04e52-2",
+                "temp: tests/test_auth.py:L1-10 #0c9e7a13-3"
             ]
         },
         {
             "message": "refactor: simplify schema validation",
             "commits": [
-                "temp: src/schema.py:L5-25",
-                "temp: src/schema.py:L40-60"
+                "temp: src/schema.py:L5-25 #5e81d2fa-4",
+                "temp: src/schema.py:L40-60 #a4c7310b-5"
             ]
         }
     ]
 
-Commits not mentioned in any group get picked unchanged.
+Messages must match exactly. Commits not mentioned in any group get picked
+unchanged, after all the groups.
 
 Algorithm:
 ----------

@@ -219,6 +219,11 @@ def _split_hunk(hunk_lines: list[str], min_context: int) -> list[list[str]] | No
         else:
             current.append(line)
             i += 1
+            # A "\ No newline at end of file" marker belongs to the changed line
+            # before it, not to a context run that could split an edited last line.
+            while i < len(body) and body[i].startswith("\\"):
+                current.append(body[i])
+                i += 1
 
     # The last region has no split point after it to close it.
     if current:

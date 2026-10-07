@@ -1,6 +1,6 @@
 """
-Phase 3: Group and squash temp commits
-=========================================
+Phase 3: Finalize — squash temp commits into final commits
+==========================================================
 
 Takes a base ref and a grouping specification (JSON), then squashes
 the temp commits into logical final commits via non-interactive rebase.

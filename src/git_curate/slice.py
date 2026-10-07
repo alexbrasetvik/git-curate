@@ -26,25 +26,25 @@ This script is Phase 1 of three:
 Algorithm (Phase 1)
 -------------------
   1. Run `git diff --cached -U3` on the index (or specified files).
-  2. Parse the first hunk from the output (first @@ block of the first
-     file), including the required diff/---/+++ header lines, to form
-     a self-contained mini-patch.
-  3. Apply that hunk to a throwaway temp index (GIT_INDEX_FILE) seeded
-     from HEAD. The real staged index stays untouched.
-  4. Write the resulting tree and create a commit via git commit-tree
-     (plumbing, no hooks), then advance HEAD with git update-ref.
-     Temp commits carry the Git Curate <git-curate@local> author so
-     group and abort can detect them.
-  5. Repeat from step 1. HEAD advances each iteration so the staged diff
-     shrinks as committed hunks move into HEAD.
-  6. Stop when `git diff --cached` returns empty.
+  2. Parse every hunk, splitting hunks like `git add -p` 's', then at blank
+     lines between sibling blocks of added or removed lines. Each hunk's
+     old-side offset accounts for the earlier hunks in its file, so hunk k
+     applies on top of hunks 1..k-1. Any rename or mode change rides along
+     with a file's first hunk.
+  3. Load HEAD's version of every touched file, apply the hunks to them in
+     Python, and stream one commit per hunk through a single
+     `git fast-import` (no hooks). Temp commits carry the
+     Git Curate <git-curate@local> author so group and abort can detect them.
+  4. Check that every touched path in the last temp commit matches the
+     real index, then advance HEAD to it with update-ref.
 
 Replaying them in order reconstructs the original staged state.
 
 Key properties
 --------------
-- Non-destructive: the real staged index stays untouched.
-- No stale offsets: the loop re-reads the diff each iteration.
+- Non-destructive: the real staged index stays untouched, and HEAD only
+  moves once every temp commit exists and matches the index.
+- Fast: one diff and a handful of git processes, however many hunks.
 - Conflict-free: only repackages state that already exists.
 - Works for new files, deletions, and modified files alike.
 - Pager-safe: uses --no-pager and color.ui=false to avoid delta/less
@@ -73,43 +73,92 @@ Usage
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import itertools
 import re
 import sys
+import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Annotated, Any
+from typing import Annotated
 
 import sh
 import typer
 
-from .common import Exit, SubApp, curate_git, git, resolve_rewrite_from, temp_git_index
+from .common import Exit, SliceError, SubApp, curate_git, git, resolve_rewrite_from
 
 app = SubApp()
+
+# Context lines in the diff that slicing parses (`git diff -U<n>`).
+DIFF_CONTEXT = 3
+
+
+@dataclass
+class FileDiff:
+    """The per-file part of a diff: paths, modes, and the extended header lines."""
+
+    header_lines: list[str]
+    old_path: str | None  # None for a new file
+    new_path: str | None  # None for a deleted file
+    new_mode: str | None = None  # set when the diff creates the file or changes its mode
+
+    @property
+    def is_deleted(self) -> bool:
+        return self.new_path is None
 
 
 @dataclass
 class Hunk:
+    """One temp commit's change, positioned to apply on top of the earlier hunks in its file."""
+
     file_path: str
-    line_desc: str
-    mini_patch: str
+    line_desc: str  # the hunk's line range in the staged file, e.g. "L10-14"
+    file: FileDiff
+    # The @@ header (offset-adjusted) followed by the hunk body.
+    lines: list[str]
+    first_in_file: bool  # this hunk's commit also creates, renames or re-modes the file
 
 
 # ---------------------------------------------------------------------------
 # Patch parsing
 # ---------------------------------------------------------------------------
 
-# Matches a per-file diff header: "diff --git a/foo b/foo"
-FILE_HEADER = re.compile(r"^diff --git a/.+ b/.+$", re.MULTILINE)
+# Matches the start of a per-file diff block: "diff --git a/foo b/foo"
+FILE_HEADER = re.compile(r"^diff --git ", re.MULTILINE)
 
 # Matches a hunk header: "@@ -start,count +start,count @@ optional context"
 HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
 
 
+def split_lines(text: str) -> list[str]:
+    """Split on "\\n" only, keeping line endings.
+
+    Unlike str.splitlines, this leaves "\\r", form feeds and other Unicode line
+    breaks inside a line, as git does.
+    """
+    parts = text.split("\n")
+    lines = [part + "\n" for part in parts[:-1]]
+    if parts[-1]:
+        lines.append(parts[-1])
+    return lines
+
+
+def parse_hunk_header(header: str) -> tuple[int, int, int, int, str]:
+    """Return (old_start, old_count, new_start, new_count, label) from an @@ line."""
+    match = HUNK_HEADER.match(header.rstrip("\n"))
+    assert match is not None
+    old_count = int(match.group(2)) if match.group(2) is not None else 1
+    new_count = int(match.group(4)) if match.group(4) is not None else 1
+    return int(match.group(1)), old_count, int(match.group(3)), new_count, match.group(5) or ""
+
+
 def _is_diff_context(line: str) -> bool:
-    """Return True if line is a context line (space-prefixed or bare blank).
+    """Return True if line is a context line (space-prefixed or bare blank) or a "\\" marker.
 
     Git normally prefixes context lines with a space, but diff.suppressBlankEmpty
     emits bare newlines instead. Treat both as context to keep gap-counting correct.
+    Callers that count lines must skip "\\ No newline at end of file" markers first.
     """
     return line.startswith((" ", "\\")) or line in ("\n", "\r\n")
 
@@ -138,6 +187,7 @@ def _split_hunk(hunk_lines: list[str], min_context: int) -> list[list[str]] | No
     current: list[str] = []
     i = 0
 
+    # Walk the body a whole context run or a single changed line at a time.
     while i < len(body):
         line = body[i]
         if _is_diff_context(line):
@@ -147,16 +197,15 @@ def _split_hunk(hunk_lines: list[str], min_context: int) -> list[list[str]] | No
                 i += 1
             ctx_run = body[ctx_start:i]
 
-            # If there are changes before AND after this context, and the
-            # run is long enough, this is a split point.
+            # Only a run with changes on both sides is interior.
             has_changes_before = any(line.startswith(("+", "-")) for line in current)
             has_changes_after = i < len(body)
 
+            # A long enough interior run is a split point: it ends the current
+            # region as trailing context and starts the next as leading context.
             if has_changes_before and has_changes_after and len(ctx_run) >= min_context:
-                # End the current region with trailing context
                 current.extend(ctx_run)
                 regions.append(current)
-                # Start a new region with leading context (same lines)
                 current = list(ctx_run)
             else:
                 current.extend(ctx_run)
@@ -164,9 +213,11 @@ def _split_hunk(hunk_lines: list[str], min_context: int) -> list[list[str]] | No
             current.append(line)
             i += 1
 
+    # The last region has no split point after it to close it.
     if current:
         regions.append(current)
 
+    # No interior run was long enough.
     if len(regions) <= 1:
         return None
 
@@ -181,188 +232,837 @@ def _make_hunk_header(old_start: int, old_count: int, new_start: int, new_count:
 def _rebuild_sub_hunk_headers(original_header: str, sub_hunks: list[list[str]]) -> list[list[str]]:
     """Recompute @@ headers for each sub-hunk after a split.
 
-    Assigns correct line numbers and counts so git apply accepts each sub-hunk.
+    Assigns correct line numbers and counts so each sub-hunk applies on its own.
+    Positions are against the original (unpatched) file. Consecutive sub-hunks
+    from _split_hunk share a context run (the trailing context of one is the
+    leading context of the next), so that run is not counted twice.
     """
-    match = HUNK_HEADER.match(original_header.rstrip("\n"))
-    assert match is not None
-    old_pos = int(match.group(1))
-    new_pos = int(match.group(3))
-    label = match.group(5) or ""
+    old_pos, _, new_pos, _, label = parse_hunk_header(original_header)
 
     result: list[list[str]] = []
-    for body_lines in sub_hunks:
-        old_count = sum(1 for line in body_lines if _is_diff_context(line) or line.startswith("-"))
-        new_count = sum(1 for line in body_lines if _is_diff_context(line) or line.startswith("+"))
+    for i, body_lines in enumerate(sub_hunks):
+        # Header the sub-hunk at the current position on each side.
+        old_count, new_count = _count_sides(body_lines)
         header = _make_hunk_header(old_pos, old_count, new_pos, new_count, label)
         result.append([header] + body_lines)
 
-        # Advance positions: context and removed lines consume old,
-        # context and added lines consume new.
-        for line in body_lines:
-            if _is_diff_context(line):
-                old_pos += 1
-                new_pos += 1
-            elif line.startswith("-"):
-                old_pos += 1
-            elif line.startswith("+"):
-                new_pos += 1
+        # Advance past this sub-hunk, then step back over the context run the
+        # next sub-hunk starts with.
+        old_pos += old_count
+        new_pos += new_count
+        if i + 1 < len(sub_hunks):
+            shared = _trailing_context_count(body_lines)
+            old_pos -= shared
+            new_pos -= shared
 
     return result
 
 
-def parse_first_hunk(diff_text: str, min_context: int = 4) -> Hunk | None:
-    """Extract the first hunk from a unified diff as a self-contained mini-patch.
+def _count_sides(body_lines: list[str]) -> tuple[int, int]:
+    """Return (old_count, new_count) for a hunk body.
 
-    Returns (file_path, line_desc, mini_patch) or None if diff is empty /
-    unparseable.
-
-    The mini-patch is a fully valid unified diff that `git apply` will accept:
-      - diff --git header
-      - --- / +++ lines
-      - exactly one @@ hunk
-
-    Binary files (no +++ / @@ lines) get skipped; the function tries the next file.
+    "\\ No newline at end of file" markers annotate the previous line and don't count.
     """
-    if not diff_text.strip():
-        return None
+    old_count = new_count = 0
+    for line in body_lines:
+        # Checked first, since _is_diff_context would count a marker as context.
+        if line.startswith("\\"):
+            continue
+        # A context line is on both sides.
+        if _is_diff_context(line):
+            old_count += 1
+            new_count += 1
 
-    # -- locate all file headers --
-    file_starts = [m.start() for m in FILE_HEADER.finditer(diff_text)]
-    if not file_starts:
-        return None
+        # A removed line is only on the old side, an added line only on the new.
+        elif line.startswith("-"):
+            old_count += 1
+        elif line.startswith("+"):
+            new_count += 1
+    return old_count, new_count
 
-    # Iterate through files in order; skip binary files (no +++ b/ or @@ lines)
-    for file_index, start in enumerate(file_starts):
-        end = file_starts[file_index + 1] if file_index + 1 < len(file_starts) else len(diff_text)
-        file_block = diff_text[start:end]
 
-        lines = file_block.splitlines(keepends=True)
+def _trailing_context_count(body_lines: list[str]) -> int:
+    """Return how many context lines end a hunk body."""
+    count = 0
+    # Walk back to the last changed line. A marker stops the walk too; only a
+    # file's last sub-hunk can end in one, and its count is never used.
+    for line in reversed(body_lines):
+        if not _is_diff_context(line) or line.startswith("\\"):
+            break
+        count += 1
+    return count
 
-        # -- collect the file-level header (diff, index, ---, +++) --
-        header_lines: list[str] = []
-        hunk_start_idx: int | None = None
-        file_path: str | None = None
 
-        a_path: str | None = None
-        for i, line in enumerate(lines):
+def _strip_path(line: str, prefix: str) -> str:
+    # Git appends a tab to ---/+++ paths that contain spaces (for GNU patch).
+    return line[len(prefix) :].rstrip("\n").removesuffix("\t")
+
+
+def _parse_file_header(header_lines: list[str]) -> FileDiff | None:
+    """Parse a file block's extended header. Returns None if it has no usable paths.
+
+    Quoted paths (git quotes names with control characters, quotes or
+    backslashes) are not handled, so those files stay staged.
+    """
+    old_path: str | None = None
+    new_path: str | None = None
+    new_mode: str | None = None
+    saw_old = saw_new = False
+    for line in header_lines:
+        # The old side: a/<path>, /dev/null for a new file, or a quoted path.
+        if line.startswith("--- "):
+            saw_old = True
+            if line.startswith("--- a/"):
+                old_path = _strip_path(line, "--- a/")
+
+        # The new side: b/<path>, /dev/null for a deleted file, or a quoted path.
+        elif line.startswith("+++ "):
+            saw_new = True
             if line.startswith("+++ b/"):
-                file_path = line[len("+++ b/") :].strip()
-            elif line.startswith("--- a/"):
-                a_path = line[len("--- a/") :].strip()
-            if HUNK_HEADER.match(line.rstrip("\n")):
-                hunk_start_idx = i
-                break
-            header_lines.append(line)
+                new_path = _strip_path(line, "+++ b/")
 
-        # Fallback for deleted files: +++ /dev/null → use the --- a/<file> path
-        if file_path is None and a_path is not None:
-            file_path = a_path
+        # The mode of a created file, or the new mode of a mode change.
+        elif line.startswith(("new file mode ", "new mode ")):
+            new_mode = line.rstrip("\n").rsplit(" ", 1)[1]
 
-        if hunk_start_idx is None or file_path is None:
-            # Binary file or other non-patchable entry — try the next file
+    # A side without an a/ or b/ path must be /dev/null; anything else is a
+    # quoted path.
+    if not (saw_old and saw_new) or (old_path is None and new_path is None):
+        return None
+    if old_path is None and not any(line.startswith("--- /dev/null") for line in header_lines):
+        return None
+    if new_path is None and not any(line.startswith("+++ /dev/null") for line in header_lines):
+        return None
+    return FileDiff(header_lines=header_lines, old_path=old_path, new_path=new_path, new_mode=new_mode)
+
+
+def _sub_hunks(hunk_lines: list[str], min_context: int) -> list[list[str]]:
+    """Split one hunk like `git add -p` 's', returning each sub-hunk with its @@ header.
+
+    Positions are against the original file. Sub-hunks after the first have
+    their leading context trimmed to DIFF_CONTEXT lines, like a hunk git
+    itself would emit.
+    """
+    # A min_context of 0 turns splitting off (--split-context 0).
+    sub_hunks = _split_hunk(hunk_lines, min_context) if min_context > 0 else None
+    if sub_hunks is None:
+        return [hunk_lines]
+
+    result = []
+    # Header each sub-hunk, then trim the context run it shares with the one before.
+    for i, sub_hunk in enumerate(_rebuild_sub_hunk_headers(hunk_lines[0], sub_hunks)):
+        header, body = sub_hunk[0], sub_hunk[1:]
+        if i > 0:
+            # The shared context run can be longer than git would put before a hunk.
+            leading = 0
+            while leading < len(body) and _is_diff_context(body[leading]):
+                leading += 1
+
+            # Keep its last DIFF_CONTEXT lines, and move the header down past the rest.
+            trim = max(0, leading - DIFF_CONTEXT)
+            if trim:
+                old_start, old_count, new_start, new_count, label = parse_hunk_header(header)
+                header = _make_hunk_header(
+                    old_start + trim, old_count - trim, new_start + trim, new_count - trim, label
+                )
+                body = body[trim:]
+        result.append([header] + body)
+    return result
+
+
+def _is_blank_change(line: str) -> bool:
+    return line.startswith(("+", "-")) and not line[1:].strip()
+
+
+def _indent(line: str) -> int:
+    """Return the width of a diff line's leading whitespace, counting a tab as one."""
+    text = line[1:]
+    return len(text) - len(text.lstrip(" \t"))
+
+
+def _change_regions(body: list[str]) -> Iterator[tuple[int, int]]:
+    """Yield (start, end) for each run of changed lines in a hunk body.
+
+    A "\\ No newline at end of file" marker stays in the run it follows.
+    """
+    i = 0
+    while i < len(body):
+        # Skip context lines, and any marker after one.
+        if not body[i].startswith(("+", "-")):
+            i += 1
             continue
 
-        # -- collect exactly the first hunk (from @@ up to next @@ or EOF) --
-        hunk_lines: list[str] = [lines[hunk_start_idx]]
-        for line in lines[hunk_start_idx + 1 :]:
-            if HUNK_HEADER.match(line.rstrip("\n")):
-                break
-            hunk_lines.append(line)
-
-        # Try to split the hunk (like git add -p 's').
-        # On success, commit only the first sub-hunk; the rest stay staged for the next iteration.
-        # min_context=0 disables splitting.
-        sub_hunks = _split_hunk(hunk_lines, min_context) if min_context > 0 else None
-        if sub_hunks is not None:
-            hunk_lines = _rebuild_sub_hunk_headers(hunk_lines[0], sub_hunks)[0]
-
-        # Parse the hunk header for a human-readable description
-        match = HUNK_HEADER.match(hunk_lines[0].rstrip("\n"))
-        assert match is not None
-        new_start = match.group(3)
-        new_count = match.group(4) or "1"
-        new_end = int(new_start) + int(new_count) - 1
-        line_desc = f"L{new_start}-{new_end}"
-
-        mini_patch = "".join(header_lines) + "".join(hunk_lines)
-
-        # Ensure the patch ends with a newline so `git apply` doesn't complain
-        if not mini_patch.endswith("\n"):
-            mini_patch += "\n"
-
-        return Hunk(file_path=file_path, line_desc=line_desc, mini_patch=mini_patch)
-
-    return None
+        # Extend the run up to the next context line.
+        start = i
+        while i < len(body) and body[i].startswith(("+", "-", "\\")):
+            i += 1
+        yield start, i
 
 
-# ---------------------------------------------------------------------------
-# Slice loop
-# ---------------------------------------------------------------------------
+def _blank_line_cuts(body: list[str]) -> list[int]:
+    """Return body indices where a run of changes can be cut at a blank line.
 
+    Within a region of only additions or only removals, cut after a run of
+    blank or whitespace-only lines if the next non-blank line is indented no
+    deeper than the region's first non-blank line. That separates sibling
+    blocks (functions, tests, paragraphs) without cutting inside a block's
+    body, and without knowing anything about the language.
 
-def _commit_single_hunk(git_tmp: Any, hunk: Hunk, commit_count: int) -> None:
-    """Apply one hunk to the throwaway index and advance HEAD with a new temp commit.
-
-    git_tmp is a baked sh command that points at a separate GIT_INDEX_FILE,
-    so the real staged index is never touched.
-
-    The commit message encodes the file path, line range, and a hash of the
-    patch content so the AI agent can reason about individual hunks later.
+    Without a cut there, two blocks added in one run share a hunk, and so a
+    temp commit, even when they belong in different final commits.
     """
-    # Seed the temp index from HEAD, then layer this hunk on top of it.
-    git_tmp("read-tree", "HEAD")
-    git_tmp.apply("--cached", _in=hunk.mini_patch)
-    new_tree = str(git_tmp("write-tree")).strip()
+    cuts: list[int] = []
+    for start, end in _change_regions(body):
+        # A replacement stays whole: which removed lines pair with which
+        # added ones isn't clear enough to split.
+        changes = [(j, body[j]) for j in range(start, end) if not body[j].startswith("\\")]
+        if len({line[0] for _, line in changes}) != 1:
+            continue
 
-    # Build a stable, unique commit message:
-    #   diff_hash    — identifies the exact patch content
-    #   commit_count — ensures uniqueness when the same patch appears twice
-    head_sha = str(git("rev-parse", "HEAD")).strip()
-    diff_hash = hashlib.sha256(hunk.mini_patch.encode()).hexdigest()[:8]
-    msg = f"temp: {hunk.file_path}:{hunk.line_desc} #{diff_hash}-{commit_count}"
+        # Indentation is compared against the region's first block.
+        ref_indent: int | None = None
+        after_blank = False
+        for j, line in changes:
+            if _is_blank_change(line):
+                # Leading blanks don't count: there's no block before them to cut off.
+                after_blank = ref_indent is not None
+                continue
 
-    # commit-tree + update-ref: plumbing path that bypasses hooks.
-    # curate_git sets GIT_AUTHOR_NAME/EMAIL to git-curate@local so we can
-    # identify our temp commits later (abort, status, etc.).
-    new_sha = str(curate_git("commit-tree", new_tree, "-p", head_sha, "-m", msg)).strip()
-    git("update-ref", "HEAD", new_sha)
+            # The first non-blank line sets the reference; a later one right
+            # after blanks, indented no deeper, starts a sibling block.
+            if ref_indent is None:
+                ref_indent = _indent(line)
+            elif after_blank and _indent(line) <= ref_indent:
+                cuts.append(j)
+            after_blank = False
+    return cuts
 
-    print(f"  [{commit_count}] {msg}")
+
+def _as_context(lines: list[str], drop: str) -> list[str]:
+    """Rewrite one side of a hunk body as context lines.
+
+    Lines starting with *drop* are left out, along with any marker after them.
+    """
+    out: list[str] = []
+    kept = False
+    for line in lines:
+        # A marker belongs to the line before it, so it goes wherever that line went.
+        if line.startswith("\\"):
+            if kept:
+                out.append(line)
+            continue
+
+        # Keep context and the other side's changes, all as context lines.
+        kept = not line.startswith(drop)
+        if kept:
+            out.append(line if _is_diff_context(line) else " " + line[1:])
+    return out
 
 
-def slice_hunks(paths: list[str], min_context: int = 4) -> int:
-    """Decompose the staged diff into one commit per hunk.
+def _context_slice(lines: list[str], from_end: bool) -> list[str]:
+    """Take up to DIFF_CONTEXT lines from one end of *lines*, keeping a marker with its line."""
+    positions = [i for i, line in enumerate(lines) if not line.startswith("\\")]
+    if not positions:
+        return []
 
-    Uses a temporary GIT_INDEX_FILE so the real staged index stays untouched.
-    Each iteration parses the first hunk from the current staged diff, commits
-    it, then loops — HEAD advances each round, shrinking the staged diff until
-    nothing remains.
+    # Taken from the end, the slice runs to the end of lines, so markers come along.
+    n = min(DIFF_CONTEXT, len(positions))
+    if from_end:
+        return lines[positions[-n] :]
+
+    # Taken from the start, a marker after the last line taken still belongs to it.
+    end = positions[n - 1] + 1
+    if end < len(lines) and lines[end].startswith("\\"):
+        end += 1
+    return lines[:end]
+
+
+def _line_cuts(body: list[str]) -> tuple[list[str], list[int]]:
+    """Return a hunk body and the indices where it can be cut into one piece per changed line.
+
+    In a region with both removals and additions, the k-th removed line is
+    paired with the k-th added one, and the body is reordered to interleave
+    them so each pair can be cut out. That suits a run of edited lines, like
+    an import block. Unpaired lines get pieces of their own. A region with a
+    "\\ No newline at end of file" marker is only reordered if it has a
+    single kind of change, so the marker stays after its line.
+
+    A blank or whitespace-only line stays in the piece before it.
+    """
+    out: list[str] = []
+    cuts: list[int] = []
+    prev = 0
+
+    # Rebuild the body region by region, copying the context between regions as is.
+    for start, end in _change_regions(body):
+        out.extend(body[prev:start])
+        prev = end
+        region = body[start:end]
+        removed = [line for line in region if line.startswith("-")]
+        added = [line for line in region if line.startswith("+")]
+
+        # Break the region into units, the changed lines of one piece each.
+        if removed and added and any(line.startswith("\\") for line in region):
+            # Interleaving would move the marker away from its line.
+            units = [region]
+        elif removed and added:
+            # Pair removals with additions in order; the longer side's extra lines stand alone.
+            units = [[r, a] for r, a in zip(removed, added, strict=False)]
+            n = min(len(removed), len(added))
+            units += [[line] for line in removed[n:] + added[n:]]
+        else:
+            # A marker stays in the unit of the line it follows.
+            units = []
+            for line in region:
+                if line.startswith("\\"):
+                    units[-1].append(line)
+                else:
+                    units.append([line])
+
+        # Cut before each unit, unless it starts with a blank line.
+        for unit in units:
+            if out and not _is_blank_change(unit[0]):
+                cuts.append(len(out))
+            out.extend(unit)
+    out.extend(body[prev:])
+
+    # The first non-blank change has no earlier piece to cut it from, so
+    # leading blank lines join it.
+    first = next((i for i, line in enumerate(out) if line.startswith(("+", "-")) and not _is_blank_change(line)), None)
+    return out, [cut for cut in cuts if first is not None and cut > first]
+
+
+def _split_at_blank_lines(hunk_lines: list[str]) -> list[list[str]]:
+    """Cut one hunk at the blank lines _blank_line_cuts finds; return each piece with its @@ header."""
+    return _split_at(hunk_lines[0], hunk_lines[1:], _blank_line_cuts(hunk_lines[1:]))
+
+
+def _split_at_lines(hunk_lines: list[str]) -> list[list[str]]:
+    """Cut one hunk into a piece per changed line, as _line_cuts finds; return each piece with its @@ header."""
+    body, cuts = _line_cuts(hunk_lines[1:])
+    return _split_at(hunk_lines[0], body, cuts)
+
+
+def _split_at(header: str, body: list[str], cuts: list[int]) -> list[list[str]]:
+    """Cut a hunk body at *cuts*; return each piece with its @@ header.
+
+    The pieces apply in order, each on top of the previous ones, and are
+    positioned for that, not against the original file. Adjacent pieces
+    share context lines, so deps.compute_dependencies requires them to stay
+    in order during group. A hunk with no cuts comes back unchanged.
+    """
+    if not cuts:
+        return [[header, *body]]
+
+    old_start, old_count, new_start, _, label = parse_hunk_header(header)
+    # An empty old side (a new file) means "insert after line old_start". Later
+    # pieces always start with context, so they count from the line after.
+    later_old_start = old_start if old_count else old_start + 1
+
+    pieces: list[list[str]] = []
+    bounds = [0, *cuts, len(body)]
+    for lo, hi in itertools.pairwise(bounds):
+        # Context is the file as this piece finds it: earlier pieces applied
+        # (their new side), later ones not yet (their old side).
+        lead = _context_slice(_as_context(body[:lo], drop="-"), from_end=True)
+        trail = _context_slice(_as_context(body[hi:], drop="+"), from_end=False)
+        piece = lead + body[lo:hi] + trail
+
+        # Position the piece after the new side of the earlier pieces.
+        shift = _count_sides(body[:lo])[1] - _count_sides(lead)[0]
+        piece_old_start = later_old_start + shift if lo else old_start
+        piece_old, piece_new = _count_sides(piece)
+        pieces.append([_make_hunk_header(piece_old_start, piece_old, new_start + shift, piece_new, label)] + piece)
+    return pieces
+
+
+def _parse_file_block(file_block: str, min_context: int, by_line: bool = False) -> list[Hunk]:
+    """Turn one file's diff into hunks that apply in order, each on top of the previous ones."""
+    lines = split_lines(file_block)
+
+    header_end = next((i for i, line in enumerate(lines) if HUNK_HEADER.match(line.rstrip("\n"))), None)
+    if header_end is None:
+        # Binary file, pure rename, mode-only change, ... — nothing to patch.
+        return []
+
+    # A file whose header can't be parsed is skipped, and stays staged.
+    file_diff = _parse_file_header(lines[:header_end])
+    if file_diff is None:
+        return []
+
+    # A deleted file is named by its old path.
+    file_path = file_diff.new_path or file_diff.old_path
+    assert file_path is not None
+
+    # Group the body by @@ header.
+    raw_hunks: list[list[str]] = []
+    for line in lines[header_end:]:
+        if HUNK_HEADER.match(line.rstrip("\n")):
+            raw_hunks.append([])
+        raw_hunks[-1].append(line)
+
+    hunks: list[Hunk] = []
+    # Net lines added by this file's earlier sub-hunks: shifts the old-side
+    # position of every later one.
+    delta = 0
+    for raw_hunk in raw_hunks:
+        for sub_hunk in _sub_hunks(raw_hunk, min_context):
+            # A deleted file must be emptied by its last hunk, so its hunks stay whole.
+            if file_diff.is_deleted:
+                pieces = [sub_hunk]
+            elif by_line:
+                pieces = _split_at_lines(sub_hunk)
+            else:
+                pieces = _split_at_blank_lines(sub_hunk)
+
+            # Shift each piece past the earlier sub-hunks, and make it a Hunk.
+            for piece in pieces:
+                header, body = piece[0], piece[1:]
+                old_start, old_count, new_start, new_count, label = parse_hunk_header(header)
+                if delta:
+                    # Earlier hunks are applied by now, so only the old side
+                    # moves; the new side already counts from the staged file.
+                    header = _make_hunk_header(old_start + delta, old_count, new_start, new_count, label)
+
+                # The file's first hunk carries its creation, rename or mode change.
+                hunks.append(
+                    Hunk(
+                        file_path=file_path,
+                        line_desc=f"L{new_start}-{new_start + new_count - 1}",
+                        file=file_diff,
+                        lines=[header] + body,
+                        first_in_file=not hunks,
+                    )
+                )
+
+            # Pieces are positioned relative to each other, so the shift moves
+            # on once per sub-hunk.
+            _, old_count, _, new_count, _ = parse_hunk_header(sub_hunk[0])
+            delta += new_count - old_count
+    return hunks
+
+
+def parse_all_hunks(diff_text: str, min_context: int = 4, by_line: bool = False) -> list[Hunk]:
+    """Parse a unified diff into one hunk per temp commit.
+
+    Hunks are split like `git add -p` 's', then at blank lines between
+    sibling blocks, or with *by_line* at every changed line. Each hunk's old-side offset
+    accounts for the earlier hunks in its file, so applying the hunks in
+    order, each on top of the previous ones, reproduces the diff.
+
+    Binary files and other entries without @@ hunks are skipped.
+    """
+    file_starts = [m.start() for m in FILE_HEADER.finditer(diff_text)]
+    hunks: list[Hunk] = []
+
+    # Each file's block runs from its "diff --git" line to the next one.
+    for file_index, start in enumerate(file_starts):
+        end = file_starts[file_index + 1] if file_index + 1 < len(file_starts) else len(diff_text)
+        hunks.extend(_parse_file_block(diff_text[start:end], min_context, by_line))
+    return hunks
+
+
+# ---------------------------------------------------------------------------
+# Applying hunks
+# ---------------------------------------------------------------------------
+
+# Extended header lines slicing knows how to replay.
+SUPPORTED_HEADER_PREFIXES = (
+    "diff --git ",
+    "index ",
+    "--- ",
+    "+++ ",
+    "new file mode ",
+    "deleted file mode ",
+    "old mode ",
+    "new mode ",
+    "similarity index ",
+    "dissimilarity index ",
+    "rename from ",
+    "rename to ",
+)
+
+# Modes a file can have in a text diff. Gitlinks (160000) are submodules.
+SUPPORTED_MODES = {"100644", "100755", "120000"}
+
+
+@dataclass
+class _FileState:
+    """A file as the temp commits built so far leave it."""
+
+    mode: str
+    lines: list[str]
+
+
+def _encode(text: str) -> bytes:
+    return text.encode("utf-8", errors="surrogateescape")
+
+
+def _decode(data: bytes) -> str:
+    return data.decode("utf-8", errors="surrogateescape")
+
+
+def check_supported(hunks: list[Hunk]) -> None:
+    """Raise SliceError if any file header has something slicing doesn't model (copies, submodules)."""
+    for hunk in hunks:
+        if not hunk.first_in_file:
+            continue
+
+        # Any other header line would be replayed wrong: a copy, say, would become a rename.
+        for line in hunk.file.header_lines:
+            if not line.startswith(SUPPORTED_HEADER_PREFIXES):
+                raise SliceError(f"{hunk.file_path}: unsupported diff header {line.rstrip()!r}")
+
+        # The new mode must be one fast-import can write as file content.
+        if hunk.file.new_mode is not None and hunk.file.new_mode not in SUPPORTED_MODES:
+            raise SliceError(f"{hunk.file_path}: unsupported mode {hunk.file.new_mode}")
+
+
+def hunk_sides(body: list[str]) -> tuple[list[str], list[str]]:
+    """Return the (old, new) lines a hunk body replaces and inserts.
+
+    Lines keep their "\\n"; a "\\ No newline at end of file" marker strips it
+    from the line before it, on whichever side(s) that line belongs to.
+    """
+    old: list[str] = []
+    new: list[str] = []
+    previous: tuple[list[str], ...] = ()
+
+    for line in body:
+        # A marker changes the line before it instead of adding one.
+        if line.startswith("\\"):
+            for side in previous:
+                side[-1] = side[-1].removesuffix("\n")
+            continue
+        if line in ("\n", "\r\n"):
+            # diff.suppressBlankEmpty: a blank context line without its leading space.
+            text, previous = line, (old, new)
+        elif line.startswith(" "):
+            text, previous = line[1:], (old, new)
+        elif line.startswith("-"):
+            text, previous = line[1:], (old,)
+        elif line.startswith("+"):
+            text, previous = line[1:], (new,)
+        else:
+            raise SliceError(f"unexpected hunk line {line!r}")
+
+        # Add the line to the side(s) it belongs to.
+        for side in previous:
+            side.append(text)
+    return old, new
+
+
+def apply_hunk(lines: list[str], hunk_lines: list[str]) -> None:
+    """Apply one hunk (its @@ header + body) to a file's lines in place, strictly."""
+    old_start, old_count, _, _, _ = parse_hunk_header(hunk_lines[0])
+    old, new = hunk_sides(hunk_lines[1:])
+    # An empty old side means "insert after line old_start".
+    pos = old_start - 1 if old_count else old_start
+    if lines[pos : pos + len(old)] != old:
+        raise SliceError(f"hunk {hunk_lines[0].rstrip()!r} does not match the file")
+    lines[pos : pos + len(old)] = new
+
+
+# ---------------------------------------------------------------------------
+# Building the temp commits
+# ---------------------------------------------------------------------------
+
+
+def temp_commit_message(hunk: Hunk, commit_count: int) -> str:
+    """Build a stable, unique temp commit message.
+
+    The message encodes the file path, line range, and a hash of the patch
+    content so the AI agent can reason about individual hunks later:
+      diff_hash    — identifies the exact patch content
+      commit_count — ensures uniqueness when the same patch appears twice
+    """
+    patch = "".join([hunk.file_path, "\n", *hunk.lines])
+    diff_hash = hashlib.sha256(_encode(patch)).hexdigest()[:8]
+    return f"temp: {hunk.file_path}:{hunk.line_desc} #{diff_hash}-{commit_count}"
+
+
+def _staged_diff(paths: list[str]) -> str:
+    """Return the staged diff as text.
+
+    Undecodable bytes survive as surrogates (surrogateescape), so content
+    round-trips exactly when encoded back. The flags guard against user config
+    that would make the diff unappliable or relative to the current directory.
+    """
+    cmd = git(
+        "-c",
+        "core.quotePath=false",
+        "-c",
+        "diff.suppressBlankEmpty=false",
+        "diff",
+        "--cached",
+        f"-U{DIFF_CONTEXT}",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-relative",
+        "--",
+        *paths,
+        _return_cmd=True,
+    )
+    return _decode(cmd.stdout)
+
+
+def _ls_tree(treeish: str) -> dict[str, tuple[str, str]]:
+    """Return {path: (mode, sha)} for every blob/gitlink in a tree."""
+    out = git("ls-tree", "-r", "-z", "--full-tree", treeish, _return_cmd=True).stdout
+    entries: dict[str, tuple[str, str]] = {}
+
+    # With -z, records end in NUL and paths are not quoted.
+    for record in out.split(b"\0"):
+        if not record:
+            continue
+        # "<mode> <type> <sha>\t<path>"
+        meta, path = record.split(b"\t", 1)
+        mode, _type, sha = meta.decode().split()
+        entries[_decode(path)] = (mode, sha)
+    return entries
+
+
+def _ls_index() -> dict[str, tuple[str, str]]:
+    """Return {path: (mode, sha)} for every stage-0 entry in the real index."""
+    out = git("ls-files", "-s", "-z", "--full-name", "--", ":/", _return_cmd=True).stdout
+    entries: dict[str, tuple[str, str]] = {}
+
+    # With -z, records end in NUL and paths are not quoted.
+    for record in out.split(b"\0"):
+        if not record:
+            continue
+        # "<mode> <sha> <stage>\t<path>"; stages 1-3 are unresolved conflicts.
+        meta, path = record.split(b"\t", 1)
+        mode, sha, stage = meta.decode().split()
+        if stage == "0":
+            entries[_decode(path)] = (mode, sha)
+    return entries
+
+
+def _read_blobs(shas: list[str]) -> dict[str, bytes]:
+    """Read many blobs with a single `git cat-file --batch`."""
+    if not shas:
+        return {}
+    out: bytes = git("cat-file", "--batch", _in="".join(f"{sha}\n" for sha in shas), _return_cmd=True).stdout
+    # Each blob comes back as "<sha> <type> <size>\n<content>\n".
+    blobs: dict[str, bytes] = {}
+    pos = 0
+    for sha in shas:
+        # A missing object comes back as "<sha> missing", with no content.
+        eol = out.index(b"\n", pos)
+        header = out[pos:eol].decode().split()
+        if len(header) != 3:
+            raise SliceError(f"cat-file could not read {sha}")
+
+        # Take exactly <size> bytes of content, then skip the newline after it.
+        size = int(header[2])
+        blobs[sha] = out[eol + 1 : eol + 1 + size]
+        pos = eol + 1 + size + 1
+    return blobs
+
+
+def _load_preimages(hunks: list[Hunk], head_sha: str) -> dict[str, _FileState]:
+    """Load HEAD's mode and content for every file the hunks modify, delete or rename."""
+    head = _ls_tree(head_sha)
+    needed: dict[str, tuple[str, str]] = {}
+
+    # New files have no preimage; every other file is read once, at its first hunk.
+    for hunk in hunks:
+        if not hunk.first_in_file or hunk.file.old_path is None:
+            continue
+
+        # The file must be in HEAD, with a mode fast-import can write back.
+        path = hunk.file.old_path
+        if path not in head:
+            raise SliceError(f"{path}: not in HEAD")
+        mode, sha = head[path]
+        if mode not in SUPPORTED_MODES:
+            raise SliceError(f"{path}: unsupported mode {mode}")
+        needed[path] = (mode, sha)
+
+    # Read every blob in one process; files with the same content share a blob.
+    blobs = _read_blobs(sorted({sha for _, sha in needed.values()}))
+    return {path: _FileState(mode, split_lines(_decode(blobs[sha]))) for path, (mode, sha) in needed.items()}
+
+
+def _data(payload: bytes) -> Iterator[bytes]:
+    """Yield a fast-import data command, which gives the payload's exact byte count."""
+    yield b"data %d\n" % len(payload)
+    yield payload
+    yield b"\n"
+
+
+def _commit_stream(
+    hunks: list[Hunk],
+    messages: list[str],
+    head_sha: str,
+    ref: str,
+    author: str,
+    committer: str,
+    preimages: dict[str, _FileState],
+) -> Iterator[bytes]:
+    """Yield a fast-import stream with one commit per hunk, chained from head_sha.
+
+    preimages holds HEAD's version of each file the hunks modify; those states
+    are updated in place as hunks apply.
+    """
+    state: dict[str, _FileState | None] = dict(preimages)
+    for mark, (hunk, msg) in enumerate(zip(hunks, messages, strict=True), start=1):
+        # Collect this commit's file commands in ops, then emit the commit.
+        file_diff = hunk.file
+        target = hunk.file_path
+        ops: list[bytes] = []
+
+        # A file's first hunk sets up its state: created, renamed, or given a new mode.
+        if hunk.first_in_file:
+            if file_diff.old_path is None:  # new file
+                state[target] = _FileState(file_diff.new_mode or "100644", [])
+            else:
+                # Start from HEAD's version, which _load_preimages put in state.
+                current = state.get(file_diff.old_path)
+                if current is None:
+                    raise SliceError(f"{file_diff.old_path}: no preimage")
+                if file_diff.new_path is not None and file_diff.new_path != file_diff.old_path:
+                    # Rename: the old path goes away in this same commit.
+                    state[file_diff.old_path] = None
+                    ops.append(b"D " + _encode(file_diff.old_path) + b"\n")
+                if file_diff.new_mode is not None:
+                    current.mode = file_diff.new_mode
+                state[target] = current
+
+        # Apply the hunk to the file as the earlier commits left it.
+        current = state.get(target)
+        if current is None:
+            raise SliceError(f"{target}: hunk for a file that no longer exists")
+        apply_hunk(current.lines, hunk.lines)
+
+        # A deleted file's single hunk empties it; anything else is written in full.
+        if file_diff.is_deleted:
+            if current.lines:
+                raise SliceError(f"{target}: deleted file not empty after its hunks")
+            state[target] = None
+            ops.append(b"D " + _encode(target) + b"\n")
+        else:
+            ops.append(b"M " + current.mode.encode() + b" inline " + _encode(target) + b"\n")
+            ops.append(b"".join(_data(_encode("".join(current.lines)))))
+
+        # Commits to the same ref chain onto each other; only the first needs a parent.
+        yield b"commit " + ref.encode() + b"\n"
+        yield b"mark :%d\n" % mark
+        yield b"author " + _encode(author) + b"\n"
+        yield b"committer " + _encode(committer) + b"\n"
+        yield from _data(_encode(msg + "\n"))
+        if mark == 1:
+            yield b"from " + head_sha.encode() + b"\n"
+        yield from ops
+        yield b"\n"
+    yield b"done\n"
+
+
+def _run_fast_import(stream: Iterator[bytes]) -> None:
+    """Feed a stream to `git fast-import`.
+
+    The stream can be large (full file content per commit). sh pulls it chunk
+    by chunk as the pipe accepts it, so memory stays flat.
+
+    If producing the stream fails, the error is held and the input ends
+    before the `done` command, so fast-import exits with an error and updates
+    no refs; the held error is then raised. Letting it escape would kill sh's
+    stdin thread without closing stdin, and fast-import would wait forever.
+    BaseException, because SliceError is a SystemExit.
+    """
+    errors: list[BaseException] = []
+
+    # Ends the stream early on an error, instead of raising in sh's stdin thread.
+    def guarded() -> Iterator[bytes]:
+        try:
+            yield from stream
+        except BaseException as e:
+            errors.append(e)
+
+    try:
+        git("fast-import", "--quiet", "--done", _in=guarded())
+    except sh.ErrorReturnCode as e:
+        if not errors:
+            raise SliceError(f"git fast-import failed: {_decode(e.stderr).strip()}") from e
+    if errors:
+        raise errors[0]
+
+
+def _verify(tip: str, hunks: list[Hunk]) -> None:
+    """Check that every path the hunks touched has the same mode and blob in tip as in the real index.
+
+    All of a file's hunks get committed, so its final content must be exactly
+    what is staged. Deleted and renamed-away paths must be absent from both.
+    """
+    touched = {path for hunk in hunks for path in (hunk.file.old_path, hunk.file.new_path) if path}
+
+    tree = _ls_tree(tip)
+    index = _ls_index()
+    for path in sorted(touched):
+        # A path absent from both compares None to None, and passes.
+        if tree.get(path) != index.get(path):
+            raise SliceError(f"{path}: result differs from the index")
+
+
+def _commit_hunks(hunks: list[Hunk], messages: list[str], head_sha: str) -> str:
+    """Create one temp commit per hunk on top of head_sha. Returns the new tip; HEAD is not moved.
+
+    Hunks are applied to file contents in Python, and all commits are streamed
+    through a single `git fast-import`. Before returning, every touched path in
+    the tip is checked against the real index.
+    """
+    check_supported(hunks)
+    preimages = _load_preimages(hunks, head_sha)
+    # curate_git carries the Git Curate author; the committer is the user.
+    author = str(curate_git("var", "GIT_AUTHOR_IDENT")).strip()
+    committer = str(git("var", "GIT_COMMITTER_IDENT")).strip()
+
+    # A unique scratch ref, so concurrent slices in other worktrees don't collide.
+    ref = f"refs/git-curate/slice-{uuid.uuid4().hex}"
+    try:
+        _run_fast_import(_commit_stream(hunks, messages, head_sha, ref, author, committer, preimages))
+        tip = str(git("rev-parse", "--verify", ref)).strip()
+    finally:
+        with contextlib.suppress(sh.ErrorReturnCode):
+            git("update-ref", "-d", ref)
+
+    _verify(tip, hunks)
+    return tip
+
+
+def slice_hunks(paths: list[str], min_context: int = 4, by_line: bool = False) -> int:
+    """Decompose the staged diff into one commit per hunk, or with *by_line* per changed line.
+
+    HEAD moves once, after all temp commits exist and match the index, so HEAD
+    and the real index are untouched if slicing fails.
 
     Returns the number of atomic commits created.
     """
-    commit_count = 0
+    try:
+        diff_text = _staged_diff(paths)
+    except sh.ErrorReturnCode:
+        return 0
 
-    with temp_git_index() as git_tmp:
-        while True:
-            # Re-read the diff every iteration: HEAD has advanced, so hunks
-            # that were committed in previous rounds have moved out of the
-            # staged diff and into HEAD.  Stale offsets would break git apply.
-            try:
-                diff_text = (
-                    str(git.diff("--cached", "-U3", "--", *paths)) if paths else str(git.diff("--cached", "-U3"))
-                )
-            except sh.ErrorReturnCode:
-                break
+    hunks = parse_all_hunks(diff_text, min_context, by_line)
+    if not hunks:
+        return 0
 
-            result = parse_first_hunk(diff_text, min_context)
-            if result is None:
-                # Staged diff is empty — every hunk has been committed.
-                break
+    # Build every commit first; slicing fails here without touching HEAD.
+    messages = [temp_commit_message(hunk, n) for n, hunk in enumerate(hunks, start=1)]
+    head_sha = str(git("rev-parse", "HEAD")).strip()
+    try:
+        tip = _commit_hunks(hunks, messages, head_sha)
+    except SliceError as e:
+        print(f"error: cannot slice: {e.reason}", file=sys.stderr)
+        raise
 
-            commit_count += 1
-            _commit_single_hunk(git_tmp, result, commit_count)
-
-    return commit_count
+    # Every commit exists and matches the index: list them, then move HEAD.
+    for n, msg in enumerate(messages, start=1):
+        print(f"  [{n}] {msg}")
+    # The old-value check refuses to move HEAD if it changed while slicing.
+    git("update-ref", "-m", "git-curate: slice", "HEAD", tip, head_sha)
+    return len(hunks)
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +1075,7 @@ def _dry_run_remaining(diff_text: str) -> str:
     lines_out: list[str] = []
     count = 0
 
+    # Each @@ header is listed under the file named by the +++ line before it.
     current_file: str | None = None
     for line in diff_text.splitlines():
         if line.startswith("+++ b/"):

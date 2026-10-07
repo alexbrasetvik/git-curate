@@ -1,13 +1,12 @@
-"""Shared utilities for slice and group."""
+"""Shared utilities for the git-curate subcommands."""
 
 from __future__ import annotations
 
-import contextlib
 import functools
 import os
+import shutil
 import sys
-import tempfile
-from collections.abc import Callable, Generator
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -88,8 +87,8 @@ CURATE_AUTHOR_EMAIL = "git-curate@local"
 SHA_DISPLAY_LEN = 12
 
 # Like git but with author identity set via env vars.
-# git commit-tree reads GIT_AUTHOR_* from the environment, not from -c flags.
-# slice.py uses this when creating temp commits.
+# git reads GIT_AUTHOR_* from the environment, not from -c flags.
+# slice.py uses this for the author ident of temp commits.
 curate_git = git.bake(
     _env={
         **os.environ,
@@ -97,21 +96,6 @@ curate_git = git.bake(
         "GIT_AUTHOR_EMAIL": CURATE_AUTHOR_EMAIL,
     }
 )
-
-
-@contextlib.contextmanager
-def temp_git_index() -> Generator[sh.RunningCommand, None, None]:
-    """Yield a git baked with a throwaway git index file.
-
-    Uses mkstemp so no fd stays open when git writes. git rename-replaces files
-    (<path>.lock → <path>), so a competing open fd would reference a stale inode.
-    """
-    fd, path = tempfile.mkstemp(suffix=".idx")
-    os.close(fd)
-    try:
-        yield git.bake(_env={**os.environ, "GIT_INDEX_FILE": path})
-    finally:
-        os.unlink(path)
 
 
 def find_slice_base() -> str:
@@ -224,8 +208,21 @@ class InvalidSpecError(Exit):
     pass
 
 
+class SliceError(Exit):
+    """The staged diff can't be sliced: something unsupported, or a result that doesn't match the index."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__()
+        self.reason = reason
+
+    def __str__(self) -> str:
+        return self.reason
+
+
 class RebaseFailedError(Exit):
-    pass
+    def __init__(self, output: str = "") -> None:
+        super().__init__()
+        self.output = output
 
 
 class UnknownHarnessError(Exit):

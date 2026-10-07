@@ -2,21 +2,27 @@
 
 from __future__ import annotations
 
+import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
 
-from git_curate.common import RebaseInProgressError, git
+from git_curate import slice as slice_mod
+from git_curate.common import RebaseInProgressError, SliceError, git
 from git_curate.slice import (
-    Hunk,
     _dry_run_remaining,
     _is_diff_context,
     _make_hunk_header,
     _rebuild_sub_hunk_headers,
+    _split_at_blank_lines,
+    _split_at_lines,
     _split_hunk,
-    parse_first_hunk,
+    apply_hunk,
+    hunk_sides,
+    parse_all_hunks,
+    parse_hunk_header,
     slice_command,
     slice_hunks,
 )
@@ -236,10 +242,20 @@ class TestRebuildSubHunkHeaders:
         result = _rebuild_sub_hunk_headers(original_header, bodies)
         m2 = self.HUNK_RE.match(result[1][0])
         assert m2 is not None
-        # old_pos advanced by 3 context lines (the 3 ctx in first body)
-        assert int(m2.group(1)) > 1
-        # new_pos advanced by 4 (1 add + 3 ctx in first body)
-        assert int(m2.group(3)) > 1
+        # The shared context run starts right after "+a": old line 1, new line 2.
+        assert int(m2.group(1)) == 1
+        assert int(m2.group(3)) == 2
+
+    def test_no_newline_marker_not_counted(self) -> None:
+        original_header = "@@ -1,9 +1,9 @@\n"
+        bodies = [
+            ["-a\n", "+A\n", " c\n", " c\n", " c\n", " c\n"],
+            [" c\n", " c\n", " c\n", " c\n", "-z\n", "\\ No newline at end of file\n", "+Z\n"],
+        ]
+        result = _rebuild_sub_hunk_headers(original_header, bodies)
+        m2 = self.HUNK_RE.match(result[1][0])
+        assert m2 is not None
+        assert (int(m2.group(1)), int(m2.group(2)), int(m2.group(3)), int(m2.group(4))) == (2, 5, 2, 5)
 
     def test_label_preserved_on_all_sub_hunks(self) -> None:
         original_header = "@@ -10,5 +10,5 @@ def my_func\n"
@@ -250,44 +266,78 @@ class TestRebuildSubHunkHeaders:
 
 
 # ---------------------------------------------------------------------------
-# parse_first_hunk
+# parse_all_hunks
 # ---------------------------------------------------------------------------
 
+THREE_HUNK_DIFF = """\
+diff --git a/foo.py b/foo.py
+index aaa..bbb 100644
+--- a/foo.py
++++ b/foo.py
+@@ -1,3 +1,4 @@
+ a
++inserted
+ b
+ c
+@@ -20,4 +21,3 @@
+ t
+-removed
+ u
+ v
+@@ -40,3 +40,3 @@
+ x
+-old
++new
+ y
+"""
 
-class TestParseFirstHunk:
-    def test_returns_none_on_empty(self) -> None:
-        assert parse_first_hunk("") is None
-        assert parse_first_hunk("   \n") is None
+RENAME_DIFF = """\
+diff --git a/old.py b/new.py
+similarity index 90%
+rename from old.py
+rename to new.py
+index aaa..bbb 100644
+--- a/old.py
++++ b/new.py
+@@ -1,3 +1,3 @@
+ a
+-b
++B
+ c
+@@ -30,3 +30,3 @@
+ x
+-y
++Y
+ z
+"""
 
-    def test_returns_none_on_no_file_header(self) -> None:
-        assert parse_first_hunk("not a diff\n") is None
+
+class TestParseAllHunks:
+    def test_returns_empty_on_no_diff(self) -> None:
+        assert parse_all_hunks("") == []
+        assert parse_all_hunks("   \n") == []
+        assert parse_all_hunks("not a diff\n") == []
 
     def test_single_hunk_single_file(self) -> None:
-        result = parse_first_hunk(SINGLE_HUNK_DIFF)
-        assert result is not None
-        assert isinstance(result, Hunk)
-        assert result.file_path == "foo.py"
-        assert "diff --git" in result.mini_patch
-        assert "--- a/foo.py" in result.mini_patch
-        assert "+++ b/foo.py" in result.mini_patch
-        assert result.mini_patch.endswith("\n")
+        (hunk,) = parse_all_hunks(SINGLE_HUNK_DIFF)
+        assert hunk.file_path == "foo.py"
+        assert hunk.first_in_file
+        assert hunk.file.header_lines[0] == "diff --git a/foo.py b/foo.py\n"
+        assert hunk.lines == ["@@ -1,3 +1,3 @@\n", " context\n", "-old line\n", "+new line\n", " context\n"]
 
-    def test_two_hunk_diff_returns_only_first_hunk(self) -> None:
-        result = parse_first_hunk(TWO_HUNK_DIFF)
-        assert result is not None
-        hunk_headers = [ln for ln in result.mini_patch.splitlines() if ln.startswith("@@")]
-        assert len(hunk_headers) == 1
+    def test_two_hunk_diff_returns_both_hunks(self) -> None:
+        first, second = parse_all_hunks(TWO_HUNK_DIFF)
+        assert first.first_in_file and not second.first_in_file
+        assert first.file is second.file
 
-    def test_two_file_diff_returns_first_file_only(self) -> None:
-        result = parse_first_hunk(TWO_FILE_DIFF)
-        assert result is not None
-        assert result.file_path == "a.py"
-        assert "b.py" not in result.mini_patch
+    def test_two_file_diff(self) -> None:
+        hunks = parse_all_hunks(TWO_FILE_DIFF)
+        assert [h.file_path for h in hunks] == ["a.py", "b.py"]
+        assert all(h.first_in_file for h in hunks)
 
     def test_line_desc_format(self) -> None:
-        result = parse_first_hunk(SINGLE_HUNK_DIFF)
-        assert result is not None
-        assert re.match(r"L\d+-\d+$", result.line_desc)
+        (hunk,) = parse_all_hunks(SINGLE_HUNK_DIFF)
+        assert re.match(r"L\d+-\d+$", hunk.line_desc)
 
     def test_min_context_zero_disables_split(self) -> None:
         ctx = " c\n" * 5
@@ -296,29 +346,17 @@ class TestParseFirstHunk:
             "index aaa..bbb 100644\n"
             "--- a/f.py\n"
             "+++ b/f.py\n"
-            "@@ -1,12 +1,12 @@\n"
+            "@@ -1,5 +1,7 @@\n"
             "+change1\n" + ctx + "+change2\n"
         )
-        r_split = parse_first_hunk(diff, min_context=3)
-        r_no_split = parse_first_hunk(diff, min_context=0)
-        assert r_no_split is not None
-        assert r_split is not None
-        assert len(r_no_split.mini_patch.splitlines()) > len(r_split.mini_patch.splitlines())
+        assert len(parse_all_hunks(diff, min_context=3)) == 2
+        assert len(parse_all_hunks(diff, min_context=0)) == 1
 
-    def test_mini_patch_always_ends_with_newline(self) -> None:
-        diff = SINGLE_HUNK_DIFF.rstrip("\n")
-        result = parse_first_hunk(diff)
-        assert result is not None
-        assert result.mini_patch.endswith("\n")
+    def test_skips_binary_file(self) -> None:
+        hunks = parse_all_hunks(BINARY_THEN_TEXT_DIFF)
+        assert [h.file_path for h in hunks] == ["foo.py"]
 
-    def test_skips_binary_file_and_returns_next_text_hunk(self) -> None:
-        result = parse_first_hunk(BINARY_THEN_TEXT_DIFF)
-        assert result is not None
-        assert result.file_path == "foo.py"
-        assert "Binary" not in result.mini_patch
-        assert "+++ b/foo.py" in result.mini_patch
-
-    def test_all_binary_returns_none(self) -> None:
+    def test_all_binary_returns_empty(self) -> None:
         diff = """\
 diff --git a/a.bin b/a.bin
 index aaa..bbb 100644
@@ -327,7 +365,260 @@ diff --git a/b.bin b/b.bin
 index ccc..ddd 100644
 Binary files a/b.bin and b/b.bin differ
 """
-        assert parse_first_hunk(diff) is None
+        assert parse_all_hunks(diff) == []
+
+    def test_old_offsets_account_for_earlier_hunks(self) -> None:
+        hunks = parse_all_hunks(THREE_HUNK_DIFF)
+        assert [parse_hunk_header(h.lines[0])[:2] for h in hunks] == [(1, 3), (21, 4), (40, 3)]
+        # line_desc is in final-file coordinates.
+        assert [h.line_desc for h in hunks] == ["L1-4", "L21-23", "L40-42"]
+
+    def test_rename_belongs_to_every_hunk_of_the_file(self) -> None:
+        first, second = parse_all_hunks(RENAME_DIFF)
+        assert first.file_path == second.file_path == "new.py"
+        assert (first.file.old_path, first.file.new_path) == ("old.py", "new.py")
+        assert first.first_in_file and not second.first_in_file
+
+    def test_split_sub_hunks_trim_leading_context(self) -> None:
+        body = ["+a\n"] + [f" c{i}\n" for i in range(5)] + ["+b\n"]
+        diff = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,5 +1,7 @@\n" + "".join(body)
+        first, second = parse_all_hunks(diff, min_context=4)
+        # First sub-hunk carries the whole context run as trailing context.
+        assert first.lines[1:] == body[:6]
+        # Second keeps DIFF_CONTEXT lines of leading context, positioned after the first sub-hunk.
+        assert second.lines[1:] == [" c2\n", " c3\n", " c4\n", "+b\n"]
+        # c2 is old line 3, shifted by the first sub-hunk's "+a" to 4; it is new line 4.
+        assert parse_hunk_header(second.lines[0])[:4] == (4, 3, 4, 4)
+
+    def test_quoted_path_is_skipped(self) -> None:
+        diff = (
+            'diff --git "a/tab\\there" "b/tab\\there"\n'
+            'index aaa..bbb 100644\n--- "a/tab\\there"\n+++ "b/tab\\there"\n'
+            "@@ -1 +1 @@\n-x\n+y\n" + THREE_HUNK_DIFF
+        )
+        hunks = parse_all_hunks(diff)
+        assert {h.file_path for h in hunks} == {"foo.py"}
+        assert len(hunks) == 3
+
+    def test_form_feed_does_not_split_lines(self) -> None:
+        diff = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,1 +1,1 @@\n-a\x0cb\n+c\x0cd\n"
+        (hunk,) = parse_all_hunks(diff)
+        assert hunk.lines[1:] == ["-a\x0cb\n", "+c\x0cd\n"]
+
+
+# ---------------------------------------------------------------------------
+# _split_at_blank_lines
+# ---------------------------------------------------------------------------
+
+
+def _replay(old: list[str], hunks: list[list[str]]) -> list[str]:
+    lines = list(old)
+    for hunk in hunks:
+        apply_hunk(lines, hunk)
+    return lines
+
+
+class TestSplitAtBlankLines:
+    # Two sibling blocks added between "a b" and "c d". The first has a blank line inside its body.
+    OLD = ["a\n", "b\n", "c\n", "d\n"]
+    ADDED = ["def f():\n", "    x = 1\n", "\n", "    return x\n", "\n", "def g():\n", "    pass\n", "\n"]
+    HUNK = ["@@ -1,4 +1,12 @@\n", " a\n", " b\n", *("+" + line for line in ADDED), " c\n", " d\n"]
+
+    def test_cuts_between_sibling_blocks_only(self) -> None:
+        first, second = _split_at_blank_lines(self.HUNK)
+
+        # The blank inside f is followed by a deeper line, so f stays whole.
+        assert first == ["@@ -1,4 +1,9 @@\n", *self.HUNK[1:8], " c\n", " d\n"]
+
+        # g's leading context is the end of f, which is in the file by the time g applies.
+        assert second == ["@@ -5,5 +5,8 @@\n", " \n", "     return x\n", " \n", *self.HUNK[8:]]
+
+        assert _replay(self.OLD, [first, second]) == ["a\n", "b\n", *self.ADDED, "c\n", "d\n"]
+
+    def test_whitespace_only_line_counts_as_blank(self) -> None:
+        hunk = ["@@ -1,1 +1,4 @@\n", " a\n", "+one\n", "+  \t\n", "+two\n"]
+        first, second = _split_at_blank_lines(hunk)
+        assert first == ["@@ -1,1 +1,3 @@\n", " a\n", "+one\n", "+  \t\n"]
+        assert second == ["@@ -1,3 +1,4 @@\n", " a\n", " one\n", "   \t\n", "+two\n"]
+        assert _replay(["a\n"], [first, second]) == ["a\n", "one\n", "  \t\n", "two\n"]
+
+    def test_leading_and_trailing_blanks_do_not_cut(self) -> None:
+        hunk = ["@@ -1,1 +1,5 @@\n", " a\n", "+\n", "+one\n", "+two\n", "+\n"]
+        assert _split_at_blank_lines(hunk) == [hunk]
+
+    def test_removed_blocks_split_with_old_side_context(self) -> None:
+        old = ["a\n", "one\n", "\n", "two\n", "b\n"]
+        hunk = ["@@ -1,5 +1,2 @@\n", " a\n", "-one\n", "-\n", "-two\n", " b\n"]
+        first, second = _split_at_blank_lines(hunk)
+
+        # "two" isn't removed yet when the first piece applies, so it is context there.
+        assert first == ["@@ -1,5 +1,3 @@\n", " a\n", "-one\n", "-\n", " two\n", " b\n"]
+        assert second == ["@@ -1,3 +1,2 @@\n", " a\n", "-two\n", " b\n"]
+
+        assert _replay(old, [first, second]) == ["a\n", "b\n"]
+
+    def test_replacement_stays_whole(self) -> None:
+        hunk = ["@@ -1,3 +1,5 @@\n", " a\n", "-old\n", "+one\n", "+\n", "+two\n", " b\n"]
+        assert _split_at_blank_lines(hunk) == [hunk]
+
+    def test_no_newline_marker_stays_with_last_piece(self) -> None:
+        hunk = ["@@ -1 +1,4 @@\n", " a\n", "+one\n", "+\n", "+two\n", "\\ No newline at end of file\n"]
+        pieces = _split_at_blank_lines(hunk)
+        assert len(pieces) == 2
+        assert pieces[1][-1] == "\\ No newline at end of file\n"
+        assert _replay(["a\n"], pieces) == ["a\n", "one\n", "\n", "two"]
+
+
+class TestParseAllHunksBlankLines:
+    def test_blank_line_cut_after_context_split(self) -> None:
+        old = ["x\n", *(f"c{i}\n" for i in range(5)), "y\n"]
+        body = ["-x\n", "+X\n", *(f" c{i}\n" for i in range(5)), "+one\n", "+\n", "+two\n", " y\n"]
+        diff = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,7 +1,10 @@\n" + "".join(body)
+
+        hunks = parse_all_hunks(diff, min_context=4)
+
+        # One cut at the c0..c4 context run, one at the blank line.
+        assert len(hunks) == 3
+        new = ["X\n", *(f"c{i}\n" for i in range(5)), "one\n", "\n", "two\n", "y\n"]
+        assert _replay(old, [h.lines for h in hunks]) == new
+
+    def test_new_file(self) -> None:
+        diff = (
+            "diff --git a/n b/n\nnew file mode 100644\n--- /dev/null\n+++ b/n\n@@ -0,0 +1,5 @@\n+one\n+1\n+\n+two\n+2\n"
+        )
+        hunks = parse_all_hunks(diff)
+        assert [h.line_desc for h in hunks] == ["L1-3", "L1-5"]
+        assert _replay([], [h.lines for h in hunks]) == ["one\n", "1\n", "\n", "two\n", "2\n"]
+
+    def test_deleted_file_stays_whole(self) -> None:
+        diff = "diff --git a/n b/n\ndeleted file mode 100644\n--- a/n\n+++ /dev/null\n@@ -1,3 +0,0 @@\n-one\n-\n-two\n"
+        assert len(parse_all_hunks(diff)) == 1
+
+
+# ---------------------------------------------------------------------------
+# _split_at_lines
+# ---------------------------------------------------------------------------
+
+
+class TestSplitAtLines:
+    def _bodies(self, pieces: list[list[str]]) -> list[list[str]]:
+        return [[line for line in piece[1:] if line.startswith(("+", "-"))] for piece in pieces]
+
+    def test_added_lines_split_one_per_piece(self) -> None:
+        old = ["import os\n", "\n", "x\n"]
+        hunk = ["@@ -1,3 +1,5 @@\n", " import os\n", "+import a\n", "+import b\n", " \n", " x\n"]
+        pieces = _split_at_lines(hunk)
+
+        assert self._bodies(pieces) == [["+import a\n"], ["+import b\n"]]
+        assert _replay(old, pieces) == ["import os\n", "import a\n", "import b\n", "\n", "x\n"]
+
+    def test_removed_lines_split_one_per_piece(self) -> None:
+        old = ["a\n", "b\n", "c\n", "d\n"]
+        hunk = ["@@ -1,4 +1,2 @@\n", " a\n", "-b\n", "-c\n", " d\n"]
+        pieces = _split_at_lines(hunk)
+
+        assert self._bodies(pieces) == [["-b\n"], ["-c\n"]]
+        assert _replay(old, pieces) == ["a\n", "d\n"]
+
+    def test_edited_lines_pair_removed_with_added(self) -> None:
+        old = ["from x import a\n", "from y import b\n", "z\n"]
+        hunk = [
+            "@@ -1,3 +1,4 @@\n",
+            "-from x import a\n",
+            "-from y import b\n",
+            "+from x import a, c\n",
+            "+from y import b, d\n",
+            "+from w import e\n",
+            " z\n",
+        ]
+        pieces = _split_at_lines(hunk)
+
+        assert self._bodies(pieces) == [
+            ["-from x import a\n", "+from x import a, c\n"],
+            ["-from y import b\n", "+from y import b, d\n"],
+            ["+from w import e\n"],
+        ]
+        assert _replay(old, pieces) == ["from x import a, c\n", "from y import b, d\n", "from w import e\n", "z\n"]
+
+    def test_regions_split_across_short_context(self) -> None:
+        old = ["a\n", "b\n", "c\n"]
+        hunk = ["@@ -1,3 +1,3 @@\n", "-a\n", "+A\n", " b\n", "-c\n", "+C\n"]
+        pieces = _split_at_lines(hunk)
+
+        assert self._bodies(pieces) == [["-a\n", "+A\n"], ["-c\n", "+C\n"]]
+        assert _replay(old, pieces) == ["A\n", "b\n", "C\n"]
+
+    def test_blank_line_joins_the_line_before(self) -> None:
+        hunk = ["@@ -1,1 +1,4 @@\n", " a\n", "+\n", "+one\n", "+\n", "+two\n"]
+        pieces = _split_at_lines(hunk)
+
+        assert self._bodies(pieces) == [["+\n", "+one\n", "+\n"], ["+two\n"]]
+        assert _replay(["a\n"], pieces) == ["a\n", "\n", "one\n", "\n", "two\n"]
+
+    def test_no_newline_marker_stays_with_its_line(self) -> None:
+        hunk = ["@@ -1 +1,3 @@\n", " a\n", "+one\n", "+two\n", "\\ No newline at end of file\n"]
+        pieces = _split_at_lines(hunk)
+
+        assert pieces[1][-1] == "\\ No newline at end of file\n"
+        assert _replay(["a\n"], pieces) == ["a\n", "one\n", "two"]
+
+    def test_edit_with_no_newline_marker_stays_whole(self) -> None:
+        hunk = ["@@ -1,2 +1,2 @@\n", "-a\n", "-b\n", "\\ No newline at end of file\n", "+A\n", "+B\n"]
+        assert _split_at_lines(hunk) == [hunk]
+
+    def test_single_line_comes_back_unchanged(self) -> None:
+        hunk = ["@@ -1,2 +1,3 @@\n", " a\n", "+b\n", " c\n"]
+        assert _split_at_lines(hunk) == [hunk]
+
+
+class TestParseAllHunksByLine:
+    def test_new_file(self) -> None:
+        diff = "diff --git a/n b/n\nnew file mode 100644\n--- /dev/null\n+++ b/n\n@@ -0,0 +1,3 @@\n+one\n+two\n+three\n"
+        hunks = parse_all_hunks(diff, by_line=True)
+
+        assert len(hunks) == 3
+        assert _replay([], [h.lines for h in hunks]) == ["one\n", "two\n", "three\n"]
+
+    def test_later_hunks_in_file_are_offset(self) -> None:
+        old = [f"l{i}\n" for i in range(12)]
+        body = [" l0\n", "+a\n", "+b\n", *(f" l{i}\n" for i in range(1, 11)), "+c\n", "+d\n", " l11\n"]
+        diff = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,12 +1,16 @@\n" + "".join(body)
+        hunks = parse_all_hunks(diff, by_line=True)
+
+        assert len(hunks) == 4
+        new = ["l0\n", "a\n", "b\n", *(f"l{i}\n" for i in range(1, 11)), "c\n", "d\n", "l11\n"]
+        assert _replay(old, [h.lines for h in hunks]) == new
+
+    def test_deleted_file_stays_whole(self) -> None:
+        diff = "diff --git a/n b/n\ndeleted file mode 100644\n--- a/n\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-one\n-two\n"
+        assert len(parse_all_hunks(diff, by_line=True)) == 1
+
+
+# ---------------------------------------------------------------------------
+# hunk_sides / apply_hunk
+# ---------------------------------------------------------------------------
+
+
+class TestApplyHunk:
+    def test_no_newline_marker_applies_to_previous_line(self) -> None:
+        old, new = hunk_sides([" a\n", "-b\n", "\\ No newline at end of file\n", "+B\n"])
+        assert old == ["a\n", "b"]
+        assert new == ["a\n", "B\n"]
+
+    def test_marker_after_context_applies_to_both_sides(self) -> None:
+        old, new = hunk_sides(["-a\n", "+A\n", " z\n", "\\ No newline at end of file\n"])
+        assert old == ["a\n", "z"]
+        assert new == ["A\n", "z"]
+
+    def test_rejects_mismatched_context(self) -> None:
+        lines = ["a\n", "b\n", "c\n"]
+        with pytest.raises(SliceError):
+            apply_hunk(lines, ["@@ -1,2 +1,2 @@\n", " a\n", "-x\n", "+y\n"])
+
+    def test_pure_insertion(self) -> None:
+        lines = ["a\n", "b\n"]
+        apply_hunk(lines, ["@@ -1,0 +2,1 @@\n", "+new\n"])
+        assert lines == ["a\n", "new\n", "b\n"]
 
 
 # ---------------------------------------------------------------------------
@@ -488,6 +779,147 @@ class TestSliceHunks:
         # File should be absent from HEAD
         ls = str(git("ls-files", "gone.py"))
         assert ls.strip() == ""
+
+
+def _write_lines(path: Path, lines: list[str]) -> None:
+    path.write_text("".join(lines))
+
+
+def _stage_mixed_changes(repo: Path) -> None:
+    """Commit a varied set of files, then stage changes that exercise every hunk shape (18 hunks)."""
+    _write_lines(repo / "multi.txt", [f"line {n}\n" for n in range(120)])
+    (repo / "noeol.txt").write_text("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl")
+    (repo / "crlf.txt").write_bytes(b"".join(b"crlf %d\r\n" % n for n in range(60)))
+    _write_lines(repo / "ren_src.txt", [f"rename me {n}\n" for n in range(80)])
+    _write_lines(repo / "mode.sh", [f"echo {n}\n" for n in range(60)])
+    (repo / "gone.txt").write_text("bye\nbye\n")
+    _write_lines(repo / "weird name.txt", [f"w {n}\n" for n in range(60)])
+    (repo / "latin1.txt").write_bytes(b"caf\xe9\n" * 3)
+    git.add("-A")
+    git.commit("--no-verify", "-m", "base")
+
+    # Edits within one file: a change, a removal, an insertion, and two
+    # changes close enough to share a hunk.
+    multi = [f"line {n}\n" for n in range(120)]
+    multi[2] = "changed 2\n"
+    multi[30:31] = []
+    multi.insert(60, "inserted 60\n")
+    multi[90] = "near-a\n"
+    multi[95] = "near-b\n"  # 4 context lines apart: one hunk, split in two
+    _write_lines(repo / "multi.txt", multi)
+
+    # Line-ending edge cases: no newline at end of file, and CRLF.
+    (repo / "noeol.txt").write_text("A\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nL")
+    crlf = (repo / "crlf.txt").read_bytes()
+    (repo / "crlf.txt").write_bytes(crlf.replace(b"crlf 3\r\n", b"CRLF 3\r\n").replace(b"crlf 50\r\n", b"CRLF 50\r\n"))
+
+    # File-level changes: rename with edits, mode change with edits, delete, create.
+    renamed = [f"rename me {n}\n" for n in range(80)]
+    renamed[2] = "edited 2\n"
+    renamed[70] = "edited 70\n"
+    (repo / "ren_src.txt").unlink()
+    _write_lines(repo / "ren_dst.txt", renamed)
+    mode = [f"echo {n}\n" for n in range(60)]
+    mode[1] = "echo one\n"
+    mode[50] = "echo fifty\n"
+    _write_lines(repo / "mode.sh", mode)
+    os.chmod(repo / "mode.sh", 0o755)
+    (repo / "gone.txt").unlink()
+    (repo / "new.txt").write_text("brand\nnew\n")
+
+    # A path with a space, and content that isn't UTF-8.
+    weird = [f"w {n}\n" for n in range(60)]
+    weird[0] = "W 0\n"
+    weird[40] = "W 40\n"
+    _write_lines(repo / "weird name.txt", weird)
+    (repo / "latin1.txt").write_bytes(b"caf\xe9\nCAF\xc9\ncaf\xe9\n")
+    git.add("-A")
+
+
+class TestSliceMixedChanges:
+    def test_reproduces_index(self, git_repo: Path) -> None:
+        _stage_mixed_changes(git_repo)
+        expected_tree = str(git("write-tree")).strip()
+
+        n = slice_hunks([])
+
+        assert n == 18
+        assert str(git("rev-parse", "HEAD^{tree}")).strip() == expected_tree
+        assert str(git.diff("--cached", "--name-only")).strip() == ""
+        authors = set(str(git.log("--format=%an <%ae>", f"-{n}")).splitlines())
+        assert authors == {"Git Curate <git-curate@local>"}
+
+    def test_each_commit_applies_one_hunk(self, git_repo: Path) -> None:
+        _stage_mixed_changes(git_repo)
+        n = slice_hunks([])
+        for i in range(n):
+            diff: bytes = git.diff(f"HEAD~{i + 1}", f"HEAD~{i}", "-U3", _return_cmd=True).stdout
+            assert diff.count(b"\n@@ ") == 1
+
+    def test_path_filter(self, git_repo: Path) -> None:
+        _stage_mixed_changes(git_repo)
+        assert slice_hunks(["multi.txt", "mode.sh"]) == 7
+        staged = set(str(git.diff("--cached", "--name-only")).split())
+        assert "multi.txt" not in staged and "mode.sh" not in staged
+        assert "noeol.txt" in staged
+
+
+class TestSliceErrors:
+    def _assert_untouched(self, head: str) -> None:
+        assert str(git("rev-parse", "HEAD")).strip() == head
+        assert str(git("for-each-ref", "refs/git-curate/")).strip() == ""
+
+    def test_submodule_is_rejected(self, git_repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        (git_repo / "a.txt").write_text("a\n")
+        git.add("a.txt")
+        head = str(git("rev-parse", "HEAD")).strip()
+        git("update-index", "--add", "--cacheinfo", f"160000,{head},sub")
+
+        with pytest.raises(SliceError):
+            slice_hunks([])
+
+        self._assert_untouched(head)
+        assert "error: cannot slice: sub: unsupported mode 160000" in capsys.readouterr().err
+
+    def test_result_differing_from_index_is_rejected(self, git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stage_mixed_changes(git_repo)
+        head = str(git("rev-parse", "HEAD")).strip()
+        real_ls_index = slice_mod._ls_index
+
+        def tampered_index() -> dict[str, tuple[str, str]]:
+            index = real_ls_index()
+            index["multi.txt"] = ("100644", "0" * 40)
+            return index
+
+        monkeypatch.setattr(slice_mod, "_ls_index", tampered_index)
+        with pytest.raises(SliceError, match="multi.txt: result differs from the index"):
+            slice_hunks([])
+        self._assert_untouched(head)
+
+    def test_hunk_not_matching_head_is_rejected(self, git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stage_mixed_changes(git_repo)
+        head = str(git("rev-parse", "HEAD")).strip()
+        hunks = slice_mod.parse_all_hunks(slice_mod._staged_diff([]))
+        # A later hunk (mode.sh's second) removes a line HEAD doesn't have.
+        hunks[5].lines = [line.replace("-echo 50\n", "-echo 5000\n") for line in hunks[5].lines]
+        monkeypatch.setattr(slice_mod, "parse_all_hunks", lambda *args, **kwargs: hunks)
+
+        with pytest.raises(SliceError, match="does not match"):
+            slice_hunks([])
+        self._assert_untouched(head)
+
+    def test_fast_import_failure_is_reported(self, git_repo: Path) -> None:
+        with pytest.raises(SliceError, match="git fast-import failed: .*Unsupported command: bogus"):
+            slice_mod._run_fast_import(iter([b"bogus\n"]))
+
+    def test_stream_error_ends_fast_import_without_done(self, git_repo: Path) -> None:
+        def stream() -> Iterator[bytes]:
+            yield b"commit refs/git-curate/test\n"
+            raise ValueError("boom")
+
+        with pytest.raises(ValueError, match="boom"):
+            slice_mod._run_fast_import(stream())
+        assert str(git("for-each-ref", "refs/git-curate/")).strip() == ""
 
 
 # ---------------------------------------------------------------------------

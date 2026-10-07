@@ -190,3 +190,54 @@ class TestOrderingConstraintEnforcement:
 
         result = self._runner.invoke(app, ["group", "--spec", str(spec_path), base])
         assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# Blocks split at a blank line
+# ---------------------------------------------------------------------------
+
+
+class TestBlankLineSplitDependencies:
+    _runner = CliRunner()
+
+    def _slice_two_adjacent_functions(self, git_repo: Path) -> tuple[str, list]:
+        """Add two functions in one run of lines, as in one diff hunk; return (base, commits)."""
+        # Commit the existing code to add to.
+        f = git_repo / "funcs.py"
+        f.write_text("import os\n\n\ndef main():\n    pass\n")
+        git.add(".", _cwd=git_repo)
+        git.commit("--no-verify", "-m", "add funcs.py", _cwd=git_repo)
+        base = str(git("rev-parse", "HEAD")).strip()
+
+        # Both functions go in with no unchanged line between them.
+        f.write_text(
+            "import os\n\n\ndef first():\n    return 1\n\n\ndef second():\n    return 2\n\n\ndef main():\n    pass\n"
+        )
+        git.add("--", "funcs.py", _cwd=git_repo)
+        slice_hunks([])
+        return base, list_commits(base)
+
+    def test_pieces_are_ordered(self, git_repo: Path) -> None:
+        base, commits = self._slice_two_adjacent_functions(git_repo)
+        assert len(commits) == 2
+        assert compute_dependencies(base) == [Dependency(earlier_msg=commits[0].message, later_msg=commits[1].message)]
+
+    def test_pieces_regroup_into_separate_commits(self, git_repo: Path, tmp_path: Path) -> None:
+        # The case that used to force both functions into one final commit.
+        base, commits = self._slice_two_adjacent_functions(git_repo)
+        spec = [
+            {"message": "feat: first", "commits": [commits[0].message]},
+            {"message": "feat: second", "commits": [commits[1].message]},
+        ]
+        spec_path = tmp_path / "spec.json"
+        spec_path.write_text(json.dumps(spec))
+
+        result = self._runner.invoke(app, ["group", "--spec", str(spec_path), base])
+
+        assert result.exit_code == 0, result.output
+
+        # The first commit adds only the first function.
+        assert str(git.log("--format=%s", f"{base}..HEAD")).split("\n")[:2] == ["feat: second", "feat: first"]
+        assert "def second" not in str(git.show("HEAD~1:funcs.py"))
+
+

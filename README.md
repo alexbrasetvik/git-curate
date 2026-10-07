@@ -16,9 +16,9 @@ Existing tools stage whole files (`git add <file>`). They can't drive `git add -
 
 The workflow has three phases:
 
-1. **Slice**: `git-curate slice` creates one temporary commit per diff hunk, with no reasoning. Each commit matches one hunk from `git add -p`.
+1. **Slice**: `git-curate slice` creates one temporary commit per diff hunk, with no reasoning. Hunks are split the way `git add -p`'s `s` command splits them, and also at blank lines between sibling blocks of added or removed lines, such as two new functions.
 2. **Group** (AI): an AI agent reads the commit diffs and decides which hunks belong together, producing a JSON grouping spec.
-3. **Finalize**: `git-curate group <spec>` squashes the `temp:` commits into final commits via non-interactive rebase.
+3. **Finalize**: `git-curate group --spec <spec>` squashes the `temp:` commits into final commits via non-interactive rebase.
 
 Run `git-curate` alone to execute all three steps, using Claude or pi as the model harness.
 
@@ -129,11 +129,11 @@ uvx git-curate log <base>
 
 Squashing commits is trivial. Splitting them is hard. Mix flour and water into dough and you can't separate them back out.
 
-`slice` errs toward maximum granularity. One `temp:` commit per diff hunk is the finest grain the unified diff format supports without splitting lines. The agent then groups the hunks, a task that requires understanding code semantics.
+`slice` errs toward maximum granularity. It splits hunks further at blank lines between blocks at the same indentation, so adjacent new functions or paragraphs land in separate `temp:` commits even with no unchanged lines between them. The agent then groups the hunks, a task that requires understanding code semantics.
 
 ### Division of labour
 
-The tool handles mechanics: parsing unified diffs, computing correct hunk headers, managing a throwaway index, driving non-interactive rebase. These operations are deterministic and brittle; small errors corrupt history. They belong in tested code, not an LLM prompt.
+The tool handles mechanics: parsing unified diffs, computing correct hunk headers, building the temp commits with `git fast-import`, driving non-interactive rebase. These operations are deterministic and brittle; small errors corrupt history. They belong in tested code, not an LLM prompt.
 
 The agent handles reasoning: deciding which hunks belong together and writing messages that explain intent. Language models handle this well; rule-based heuristics produce mediocre results. Each layer does what the other can't.
 

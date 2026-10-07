@@ -705,6 +705,19 @@ class TestSliceHunks:
         log = str(git.log("--oneline"))
         assert re.search(r"temp: example\.py:L\d+-\d+ #[0-9a-f]{8}-\d+", log)
 
+    def test_default_splits_at_single_context_line(
+        self, git_repo: Path, commit_test_file: Callable[[str, str], None]
+    ) -> None:
+        # Two edits with one unchanged line between them, like git add -p 's'.
+        commit_test_file("near.py", "a = 1\nb = 2\nc = 3\n")
+        (git_repo / "near.py").write_text("a = 10\nb = 2\nc = 30\n")
+        self._stage(git_repo, "near.py")
+        base = str(git("rev-parse", "HEAD")).strip()
+
+        slice_command(paths=[], dry_run=False, all_changes=False, from_commit=None)
+
+        assert str(git("rev-list", "--count", f"{base}..HEAD")).strip() == "2"
+
     def test_commit_count_suffix_makes_messages_unique(
         self, git_repo: Path, commit_test_file: Callable[[str, str], None]
     ) -> None:

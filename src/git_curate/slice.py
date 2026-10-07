@@ -100,6 +100,9 @@ app = SubApp()
 # Context lines in the diff that slicing parses (`git diff -U<n>`).
 DIFF_CONTEXT = 3
 
+# Default --split-context: split at any unchanged line between changes, like git add -p 's'.
+SPLIT_CONTEXT = 1
+
 
 @dataclass
 class FileDiff:
@@ -659,7 +662,7 @@ def _parse_file_block(
 
 
 def parse_all_hunks(
-    diff_text: str, min_context: int = 4, by_line: bool = False, split_on_blank_lines: bool = True
+    diff_text: str, min_context: int = SPLIT_CONTEXT, by_line: bool = False, split_on_blank_lines: bool = True
 ) -> list[Hunk]:
     """Parse a unified diff into one hunk per temp commit.
 
@@ -1051,7 +1054,7 @@ def _commit_hunks(hunks: list[Hunk], messages: list[str], head_sha: str) -> str:
 
 
 def slice_hunks(
-    paths: list[str], min_context: int = 4, by_line: bool = False, split_on_blank_lines: bool = True
+    paths: list[str], min_context: int = SPLIT_CONTEXT, by_line: bool = False, split_on_blank_lines: bool = True
 ) -> int:
     """Decompose the staged diff into one commit per hunk, or with *by_line* per changed line.
 
@@ -1199,10 +1202,11 @@ def slice_command(
             "--split-context",
             help=(
                 "Minimum run of context lines between two change regions required"
-                " to split a hunk (like git add -p 's'). Set to 0 to disable splitting."
+                " to split a hunk. The default of 1 matches git add -p 's'; raise it"
+                " for fewer temp commits, or set 0 to disable splitting."
             ),
         ),
-    ] = 4,
+    ] = SPLIT_CONTEXT,
     by_line: Annotated[
         bool,
         typer.Option(

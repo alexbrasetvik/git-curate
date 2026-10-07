@@ -110,6 +110,9 @@ class PiHarness(BaseHarness):
                 _in=os.devnull,
                 _err=sys.stderr,
                 _iter=True,
+                # Raise a failed exit only here, when iteration ends, not also from sh's
+                # background thread, which would print a traceback.
+                _bg_exc=False,
             )
             _stream_events(proc)
         except sh.CommandNotFound as e:

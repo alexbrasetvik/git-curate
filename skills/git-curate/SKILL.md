@@ -178,7 +178,11 @@ The headline (first line): a capitalized, imperative summary of 50 characters or
 
 For larger commits (ones that touch multiple files, introduce new infrastructure, or contain a non-obvious design decision), add a body after a blank line. The blank line is critical; tools like rebase break when you run the summary and body together. Wrap body text at 72 characters.
 
-Write in the imperative mood: "Fix bug" not "Fixed bug" or "Fixes bug." This matches what `git merge` and `git revert` generate.
+Write the headline and the body in the imperative mood: "Fix bug" not "Fixed bug" or "Fixes bug." This matches what `git merge` and `git revert` generate.
+
+The body states what the commit does to the code, as if giving the command: "Split hunks at blank lines between sibling blocks", "Add a test that slices two adjacent functions". Do not narrate history ("used to", "previously", "now", "this commit"). When the motivation is a limitation, state it as a present-tense fact ("Adjacent functions share one temp commit, so they cannot land separately.") and follow it with the imperative change.
+
+Use the names that appear in the code and docs. Do not coin phrases like "one run of lines" for something the code calls a hunk.
 
 Further paragraphs come after blank lines. Bullet points are fine: use a hyphen or asterisk followed by a single space, with blank lines between items, and a hanging indent. Keep the body focused: what problem it solves and the key approach. Omit anything self-evident from the headline.
 

@@ -27,6 +27,9 @@ Run `git-curate` alone to execute all three steps, using Claude or pi as the mod
 Install with [uv](https://docs.astral.sh/uv/):
 
 ```bash
+uv tool install 'git+https://github.com/alexbrasetvik/git-curate'
+
+# If cloning to hack locally:
 uv tool install --reinstall /path/to/git-curate
 ```
 

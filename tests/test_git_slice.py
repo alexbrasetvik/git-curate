@@ -965,6 +965,16 @@ class TestSliceCommand:
 
         assert str(git("rev-list", "--count", f"{base}..HEAD", _cwd=git_repo)).strip() == "1"
 
+    def test_next_step_names_the_commands(self, git_repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        (git_repo / "n.py").write_text("x = 1\n")
+        git.add("n.py", _cwd=git_repo)
+
+        slice_command(paths=[], dry_run=False, all_changes=False, split_context=4, from_commit=None)
+
+        out = capsys.readouterr().out
+        assert "git-curate diff --tmp" in out
+        assert "git-curate group --spec" in out
+
     def test_partial_staging_allowed(self, git_repo: Path, commit_test_file: Callable[[str, str], None]) -> None:
         # File with both staged and unstaged changes — the slicer should commit
         # only the staged portion and leave the working tree untouched.

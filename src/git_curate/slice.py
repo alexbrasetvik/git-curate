@@ -1254,4 +1254,6 @@ def slice_command(
         print("Nothing to slice — staged diff is empty.")
     else:
         print(f"\nDone. Created {n} atomic temp commit(s).")
-        print("Next step: run Phase 2 to semantically group these commits.")
+        print(
+            "Next step: write a grouping spec from `git-curate diff --tmp`, then run `git-curate group --spec <spec>`."
+        )

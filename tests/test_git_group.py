@@ -12,6 +12,7 @@ from typer.testing import CliRunner
 
 from git_curate.cli import app
 from git_curate.common import (
+    SHA_DISPLAY_LEN,
     Commit,
     RebaseFailedError,
     abort_session,
@@ -358,6 +359,15 @@ class TestGroupCommandSpecFile:
         result = self._runner.invoke(app, ["group", base, "--spec", str(spec_file), *extra_args])
         assert result.exit_code == 0, result.output
         assert spec_file.exists() == expect_exists
+
+    def test_success_points_to_curate_log(self, git_repo: Path, tmp_path: Path) -> None:
+        base = self._setup_temp_commits(git_repo)
+        spec_file = tmp_path / "groups.json"
+        self._write_spec(spec_file, base)
+
+        result = self._runner.invoke(app, ["group", base, "--spec", str(spec_file)])
+        assert result.exit_code == 0, result.output
+        assert f"git-curate log {base[:SHA_DISPLAY_LEN]}" in result.output
 
 
 # ---------------------------------------------------------------------------

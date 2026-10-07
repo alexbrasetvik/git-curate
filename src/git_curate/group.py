@@ -522,4 +522,5 @@ def group_command(
     if spec != "-" and not keep_spec:
         _cleanup_spec_file(spec)
 
-    print("\nDone. Run `git log --oneline` to inspect the result.")
+    shown_base = str(git("rev-parse", f"--short={SHA_DISPLAY_LEN}", base)).strip()
+    print(f"\nDone. Run `git-curate log {shown_base}` to inspect the result.")

@@ -1312,7 +1312,11 @@ def slice_command(
         split_on_blank_lines=split_on_blank_lines,
         split_new_files=split_new_files,
     )
+    _print_slice_done(n)
 
+
+def _print_slice_done(n: int) -> None:
+    """Report how many temp commits slicing made, and what to do next."""
     if n == 0:
         print("Nothing to slice — staged diff is empty.")
     else:

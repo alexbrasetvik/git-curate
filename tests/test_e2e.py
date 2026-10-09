@@ -209,6 +209,18 @@ def test_rewrite_slices_each_commit(git_repo: Path, args: list[str], expected: i
     assert (git_repo / "README.md").read_text() == "# repo v3\n"
 
 
+def _commit_on_feature_branch(git_repo: Path) -> str:
+    """Commit to main, then branch off it and commit a.py. Returns main's tip."""
+    (git_repo / "README.md").write_text("# repo v2\n")
+    git.commit("--no-verify", "-am", "Bump to v2")
+    main_tip = str(git("rev-parse", "main")).strip()
+    git.checkout("-b", "feature")
+    (git_repo / "a.py").write_text("a = 1\n")
+    git.add("a.py")
+    git.commit("--no-verify", "-m", "Add a")
+    return main_tip
+
+
 def test_group_splits_changes_to_the_same_line(git_repo: Path) -> None:
     first = _commit_same_line_twice(git_repo)
     runner.invoke(app, ["slice", "--from", first])

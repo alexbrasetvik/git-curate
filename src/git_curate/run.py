@@ -73,7 +73,7 @@ def _resolve_rewrite_parent(
 
 
 def _show_rewrite_summary(parent_sha: str) -> None:
-    """Show the oldest commit in the range and a one-line log of all commits."""
+    """Show the oldest commit in the range and a one-line log of all commits, with authors."""
     rev_list = str(git("rev-list", f"{parent_sha}..HEAD")).strip().splitlines()
     if not rev_list:
         print("error: no commits between HEAD and the rewrite base", file=sys.stderr)
@@ -82,7 +82,7 @@ def _show_rewrite_summary(parent_sha: str) -> None:
     print(str(git("show", "--stat", oldest_sha)))
     count = len(rev_list)
     print(f"\n{count} commit(s) to be replaced:")
-    print(str(git("log", "--oneline", f"{parent_sha}..HEAD")))
+    print(str(git("log", "--format=%h %s (%an)", f"{parent_sha}..HEAD")))
 
 
 # ── Pre-flight helpers ───────────────────────────────────────────────────────

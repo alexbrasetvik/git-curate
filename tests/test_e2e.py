@@ -185,3 +185,27 @@ def test_bare_command_passes_slice_options(git_repo: Path, args: list[str], expe
 
     assert result.exit_code == 0, result.output
     assert len(list_commits(base)) == expected
+
+
+def _commit_same_line_twice(git_repo: Path) -> str:
+    """Change one line of README.md in two commits. Returns the first commit."""
+    first = ""
+    for text, message in (("# repo v2\n", "Bump to v2"), ("# repo v3\n", "Bump to v3")):
+        (git_repo / "README.md").write_text(text)
+        git.commit("--no-verify", "-am", message)
+        first = first or str(git("rev-parse", "HEAD")).strip()
+    return first
+
+
+@pytest.mark.parametrize(("args", "expected"), [([], 2), (["--squash-first"], 1)])
+def test_rewrite_slices_each_commit(git_repo: Path, args: list[str], expected: int) -> None:
+    first = _commit_same_line_twice(git_repo)
+    base = str(git("rev-parse", f"{first}^")).strip()
+
+    result = runner.invoke(app, ["--rewrite-from", first, "--yes", "--dry-run", *args])
+
+    assert result.exit_code == 0, result.output
+    assert len(list_commits(base)) == expected
+    assert (git_repo / "README.md").read_text() == "# repo v3\n"
+
+

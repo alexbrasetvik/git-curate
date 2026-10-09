@@ -99,6 +99,8 @@ To rewrite existing commits, from `abc1234` (inclusive) to HEAD:
 uvx git-curate slice --from abc1234
 ```
 
+Each commit is sliced on its own, so a line that two commits changed in turn keeps both changes, and the agent can put them in different final commits. Each `temp:` commit names its original commit in a `Curate-Source:` trailer. Pass `--squash-first` to squash the commits and slice their combined diff instead. `git curate --rewrite-from` and `--rewrite-branch` work the same way.
+
 ### Grouping
 
 After slicing, write the diff to disk for the agent:

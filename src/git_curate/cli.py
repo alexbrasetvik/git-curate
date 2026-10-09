@@ -14,6 +14,7 @@ from .slice import (
     SplitContextOption,
     SplitNewFilesOption,
     SplitOnBlankLinesOption,
+    SquashFirstOption,
 )
 from .slice import app as slice_app
 from .status import app as status_app
@@ -52,7 +53,7 @@ def default(
         typer.Option(
             "--rewrite-from",
             metavar="COMMIT",
-            help="Rewrite commits from COMMIT (inclusive) back into the index and re-slice.",
+            help="Rewrite commits from COMMIT (inclusive), re-slicing each commit.",
         ),
     ] = None,
     rewrite_branch: Annotated[
@@ -63,7 +64,7 @@ def default(
             is_flag=False,
             flag_value="",
             help=(
-                "Rewrite commits from the merge-base with BRANCH back into the index and re-slice. "
+                "Rewrite commits since the merge-base with BRANCH, re-slicing each commit. "
                 "Omit BRANCH to auto-detect main or master."
             ),
         ),
@@ -105,6 +106,7 @@ def default(
     hunk_per_line: HunkPerLineOption = False,
     split_on_blank_lines: SplitOnBlankLinesOption = True,
     split_new_files: SplitNewFilesOption = False,
+    squash_first: SquashFirstOption = False,
 ) -> None:
     """Slice staged changes and invoke the AI harness to group them into logical commits."""
     if ctx.invoked_subcommand is not None:
@@ -126,6 +128,7 @@ def default(
         hunk_per_line=hunk_per_line,
         split_on_blank_lines=split_on_blank_lines,
         split_new_files=split_new_files,
+        squash_first=squash_first,
     )
 
 

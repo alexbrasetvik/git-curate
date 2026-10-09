@@ -19,7 +19,7 @@ from .common import (
     resolve_rewrite_from,
 )
 from .harness import get_harness, resolve_harness_name, resolve_model
-from .slice import SPLIT_CONTEXT, slice_hunks
+from .slice import SPLIT_CONTEXT, slice_commits, slice_hunks
 
 # ── Low-level git helpers ────────────────────────────────────────────────────
 
@@ -57,7 +57,7 @@ def _resolve_rewrite_parent(
     rewrite_from: str | None,
     rewrite_branch: str | None,
 ) -> str | None:
-    """Return the SHA to ``git reset --soft`` to, or None if no rewrite is requested."""
+    """Return the parent of the commits to rewrite, or None if no rewrite is requested."""
     if rewrite_from is not None and rewrite_branch is not None:
         print("error: --rewrite-from and --rewrite-branch are mutually exclusive", file=sys.stderr)
         raise Exit()
@@ -205,12 +205,19 @@ def _run_rewrite(
     rewrite_branch: str | None,
     existing_base: str | None,
     yes: bool,
-) -> None:
-    """Squash an existing commit range back into the staging area.
+    squash_first: bool,
+    split_context: int,
+    hunk_per_line: bool,
+    split_on_blank_lines: bool,
+    split_new_files: bool,
+) -> int:
+    """Replace an existing commit range with temp commits, or squash it into the staging area.
 
-    Uses `git reset --soft <parent>` so that all the commits in the range
-    become staged changes again.  The caller is responsible for setting
-    existing_base = None afterwards to force the slice step.
+    By default each commit in the range is sliced on its own, so HEAD ends on
+    temp commits with the same tree. With *squash_first*, `git reset --soft
+    <parent>` makes the whole range staged changes instead. Either way, the
+    caller slices any staged changes afterwards. Returns the number of temp
+    commits created.
 
     Exits with an error if there is already an active git-curate session,
     because resetting HEAD would destroy the temp commits we need to recover.
@@ -229,21 +236,37 @@ def _run_rewrite(
     if not yes and not typer.confirm("\nReplace these commits?", default=False):
         raise typer.Exit(0)
 
-    git("reset", "--soft", parent_sha)
-    print(f"Reset to {parent_sha[:SHA_DISPLAY_LEN]}.\n")
+    if squash_first:
+        git("reset", "--soft", parent_sha)
+        print(f"Reset to {parent_sha[:SHA_DISPLAY_LEN]}.\n")
+        return 0
+
+    return slice_commits(
+        parent_sha,
+        min_context=split_context,
+        hunk_per_line=hunk_per_line,
+        split_on_blank_lines=split_on_blank_lines,
+        split_new_files=split_new_files,
+    )
 
 
 # ── Slice helper ─────────────────────────────────────────────────────────────
 
 
 def _slice_changes(
-    all_changes: bool, split_context: int, hunk_per_line: bool, split_on_blank_lines: bool, split_new_files: bool
+    all_changes: bool,
+    split_context: int,
+    hunk_per_line: bool,
+    split_on_blank_lines: bool,
+    split_new_files: bool,
+    allow_empty: bool = False,
 ) -> None:
     """Turn staged changes into one temp commit per hunk.
 
     With --all, first stage everything in the working tree so that untracked
-    and modified-but-unstaged files are included. The other arguments are
-    slice's splitting options.
+    and modified-but-unstaged files are included. The splitting arguments are
+    slice's splitting options. *allow_empty* accepts having nothing to slice,
+    for when a rewrite already made temp commits.
     """
     if all_changes:
         git("add", "-A")
@@ -254,7 +277,7 @@ def _slice_changes(
         split_on_blank_lines=split_on_blank_lines,
         split_new_files=split_new_files,
     )
-    if n == 0:
+    if n == 0 and not allow_empty:
         print(
             "Nothing to slice. Stage changes with `git add` first, or pass --all.",
             file=sys.stderr,
@@ -350,6 +373,7 @@ def curate(
     hunk_per_line: bool = False,
     split_on_blank_lines: bool = True,
     split_new_files: bool = False,
+    squash_first: bool = False,
 ) -> None:
     existing_base = resolve_base()
 
@@ -362,19 +386,38 @@ def curate(
         existing_base = _handle_preflight(existing_base, resume, restart, all_changes)
 
     # ── Step 2: Rewrite (optional) ───────────────────────────────────────────
-    # If the user asked to squash a commit range, soft-reset HEAD to the
-    # merge-base so all those commits become staged changes again.
-    # We then clear existing_base to force the slice step below.
+    # If the user asked to rewrite a commit range, slice each commit in it into
+    # temp commits, or with --squash-first soft-reset HEAD to the base so the
+    # range becomes staged changes. We then clear existing_base to force the
+    # slice step below, which picks up any staged changes.
+    rewritten = 0
     if rewrite_from is not None or rewrite_branch is not None:
-        _run_rewrite(rewrite_from, rewrite_branch, existing_base, yes)
-        existing_base = None  # the staged changes from the reset must be re-sliced
+        rewritten = _run_rewrite(
+            rewrite_from,
+            rewrite_branch,
+            existing_base,
+            yes,
+            squash_first,
+            split_context,
+            hunk_per_line,
+            split_on_blank_lines,
+            split_new_files,
+        )
+        existing_base = None
 
     # ── Step 3: Slice ────────────────────────────────────────────────────────
     # Split staged changes into one temp commit per hunk.
     # Skipped when continuing an existing session (existing_base is not None),
     # because the temp commits from the previous run are still intact.
     if existing_base is None:
-        _slice_changes(all_changes, split_context, hunk_per_line, split_on_blank_lines, split_new_files)
+        _slice_changes(
+            all_changes,
+            split_context,
+            hunk_per_line,
+            split_on_blank_lines,
+            split_new_files,
+            allow_empty=rewritten > 0,
+        )
 
     # Resolve the base SHA now that slicing (if any) has completed.
     base_sha = resolve_base()

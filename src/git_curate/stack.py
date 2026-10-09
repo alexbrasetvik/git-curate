@@ -48,6 +48,15 @@ replayed without it: it rebuilds the chain from i's parent leaving i out, and
 any later commit that conflicts requires i and is left out too, so whatever
 needs that commit registers as needing i as well.
 
+That is one chain per commit, so up to n²/2 merges. Two things keep it cheap.
+The chains advance together, one commit at a time, so each step's merges run
+in one ``git merge-tree --stdin``: at most 2n processes, not n²/2. And a chain
+only merges a commit whose paths overlap what the chain left out; elsewhere
+the chain matches the original history, so the merge can't conflict. Skipped
+commits are picked up by the chain's next merge, whose base is the original
+tree the chain last caught up with, or by a catch-up merge when that next
+commit conflicts and is dropped.
+
 ``check`` builds each stack bottom to top and merges the stack tops together;
 the result must equal HEAD's tree, so nothing is lost in the split.
 
@@ -213,6 +222,27 @@ def _reject_merges(base: str) -> None:
         _fail({"ok": False, "errors": [f"merge commits are not supported: {merges.splitlines()[0]}"]})
 
 
+class _Paths:
+    """File paths, where a file also overlaps any path inside a directory of the same name."""
+
+    def __init__(self, files: list[str]) -> None:
+        self.files: set[str] = set()
+        self.with_dirs: set[str] = set()
+        self.add_files(files)
+
+    def add_files(self, files: list[str]) -> None:
+        for path in files:
+            self.files.add(path)
+            parts = path.split("/")
+            self.with_dirs.update("/".join(parts[:n]) for n in range(1, len(parts) + 1))
+
+    def add(self, other: _Paths) -> None:
+        self.add_files(list(other.files))
+
+    def overlaps(self, other: _Paths) -> bool:
+        return not self.files.isdisjoint(other.with_dirs) or not other.files.isdisjoint(self.with_dirs)
+
+
 def compute_requires(base: str) -> list[CommitInfo]:
     """List base..HEAD with, for each commit, the earlier commits it can't be replayed without."""
     commits = list_commits(base)
@@ -220,15 +250,34 @@ def compute_requires(base: str) -> list[CommitInfo]:
     trees = [_tree(c.sha) for c in commits]
     parent_trees = [_tree(base)] + trees[:-1]
 
+    # Chain i leaves out commit i. Its tip equals pos[i], an original tree,
+    # except at the paths in dirty[i]: those of i and of every commit it dropped.
+    tips = list(parent_trees)
+    pos = list(trees)
+    dirty = [_Paths(info.files) for info in infos]
+
     requires: list[set[int]] = [set() for _ in commits]
-    for i in range(len(commits)):
-        tip = parent_trees[i]
-        for j in range(i + 1, len(commits)):
-            result = merge_trees(parent_trees[j], tip, trees[j])
+    for j in range(1, len(commits)):
+        paths = _Paths(infos[j].files)
+        chains = [i for i in range(j) if dirty[i].overlaps(paths)]
+        results = merge_batch([(pos[i], tips[i], trees[j]) for i in chains])
+        dropped = []
+        for i, result in zip(chains, results, strict=True):
             if isinstance(result, Conflict):
                 requires[j].add(i)
+                dirty[i].add(paths)
+                dropped.append(i)
             else:
-                tip = result
+                tips[i] = result
+                pos[i] = trees[j]
+        # A dropped commit still leaves the skipped ones before it to pick up.
+        behind = [i for i in dropped if pos[i] != parent_trees[j]]
+        for i, result in zip(behind, merge_batch([(pos[i], tips[i], parent_trees[j]) for i in behind]), strict=True):
+            if isinstance(result, Conflict):
+                raise AssertionError(f"skipped commits conflict with what {commits[i].sha} left out: {result.paths}")
+            tips[i] = result
+        for i in dropped:
+            pos[i] = trees[j]
 
     # Leaving i out drops everything that conflicts without it, so this is
     # mostly closed already; close it explicitly in case a replay happened to

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import random
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -12,7 +14,8 @@ import pytest
 from typer.testing import CliRunner
 
 from git_curate.cli import app
-from git_curate.common import git
+from git_curate.common import git, list_commits
+from git_curate.stack import Conflict, _tree, compute_requires, merge_trees
 
 runner = CliRunner()
 
@@ -95,6 +98,51 @@ def commit_removal(message: str, path: str) -> str:
     return str(git("rev-parse", "HEAD")).strip()
 
 
+def _random_branch(repo: Path, rng: random.Random, commits: int) -> None:
+    """Commit random line edits, removals and file/directory swaps over a few paths."""
+    paths = ["f", "g", "h", "d", "e/x"]
+    for n in range(commits):
+        for path in rng.sample(paths, rng.randint(1, 2)):
+            target = repo / path
+            action = rng.random()
+            if action < 0.15 and target.exists():
+                shutil.rmtree(target) if target.is_dir() else target.unlink()
+                continue
+            if action < 0.25 and "/" not in path:
+                target = target / "y"  # turn the file into a directory
+            for parent in reversed(target.parents):
+                if parent.is_file():
+                    parent.unlink()
+            if target.is_dir():
+                shutil.rmtree(target)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            lines = target.read_text().splitlines() if target.exists() else [f"{path} {k}" for k in range(6)]
+            lines[rng.randrange(len(lines))] = f"edit {n}"
+            target.write_text("\n".join(lines) + "\n")
+        git.add("-A", ".")
+        git.commit("--no-verify", "--allow-empty", "-m", f"commit {n}")
+
+
+def _naive_requires(base: str) -> dict[str, list[str]]:
+    """The leave-one-out definition, one merge per (commit, later commit) pair."""
+    shas = [c.sha for c in list_commits(base)]
+    trees = [_tree(sha) for sha in shas]
+    parent_trees = [_tree(base)] + trees[:-1]
+    requires: list[set[int]] = [set() for _ in shas]
+    for i in range(len(shas)):
+        tip = parent_trees[i]
+        for j in range(i + 1, len(shas)):
+            result = merge_trees(parent_trees[j], tip, trees[j])
+            if isinstance(result, Conflict):
+                requires[j].add(i)
+            else:
+                tip = result
+    for j in range(len(shas)):
+        for k in sorted(requires[j]):
+            requires[j] |= requires[k]
+    return {sha: [shas[i] for i in sorted(requires[j])] for j, sha in enumerate(shas)}
+
+
 # ---------------------------------------------------------------------------
 # analyze
 # ---------------------------------------------------------------------------
@@ -144,6 +192,12 @@ class TestAnalyze:
         _, out = _run("analyze", "--trunk", "main")
         assert out["commits"][2]["requires"] == [_short(a)]
         assert out["commits"][3]["requires"] == [_short(a)]
+
+    @pytest.mark.parametrize("seed", range(6))
+    def test_matches_replaying_every_chain(self, feature: Path, seed: int) -> None:
+        _random_branch(feature, random.Random(seed), commits=14)
+        got = {info.sha: info.requires for info in compute_requires("main")}
+        assert got == _naive_requires("main")
 
     def test_rejects_merge_commits(self, feature: Path, commit: CommitFn) -> None:
         commit("A", a="a\n")

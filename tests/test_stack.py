@@ -128,6 +128,14 @@ class TestAnalyze:
         _, out = _run("analyze", "--trunk", "main")
         assert out["commits"][2]["requires"] == [_short(a), _short(b)]
 
+    def test_file_replaced_by_directory_requires_the_removal(self, feature: Path, commit: CommitFn) -> None:
+        commit("Add d", d="file\n")
+        rm = commit_removal("Remove d", "d")
+        (feature / "d").mkdir()
+        commit("Add d/x", **{"d/x": "x\n"})
+        _, out = _run("analyze", "--trunk", "main")
+        assert out["commits"][2]["requires"] == [_short(rm)]
+
     def test_rejects_merge_commits(self, feature: Path, commit: CommitFn) -> None:
         commit("A", a="a\n")
         git.checkout("-q", "-b", "side", "main")

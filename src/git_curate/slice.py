@@ -28,7 +28,8 @@ Algorithm (Step 1)
   1. Run `git diff --cached -U3` on the index (or specified files).
   2. Parse every hunk, splitting hunks like `git add -p` 's', then (unless
      --no-split-on-blank-lines) at blank lines between sibling blocks of
-     added or removed lines. Each hunk's old-side offset accounts for the
+     added or removed lines. New files skip the blank-line split unless
+     --split-new-files. Each hunk's old-side offset accounts for the
      earlier hunks in its file, so hunk k
      applies on top of hunks 1..k-1. Any rename or mode change rides along
      with a file's first hunk.
@@ -112,6 +113,10 @@ class FileDiff:
     old_path: str | None  # None for a new file
     new_path: str | None  # None for a deleted file
     new_mode: str | None = None  # set when the diff creates the file or changes its mode
+
+    @property
+    def is_new(self) -> bool:
+        return self.old_path is None
 
     @property
     def is_deleted(self) -> bool:
@@ -592,7 +597,11 @@ def _split_at(header: str, body: list[str], cuts: list[int]) -> list[list[str]]:
 
 
 def _parse_file_block(
-    file_block: str, min_context: int, hunk_per_line: bool = False, split_on_blank_lines: bool = True
+    file_block: str,
+    min_context: int,
+    hunk_per_line: bool = False,
+    split_on_blank_lines: bool = True,
+    split_new_files: bool = False,
 ) -> list[Hunk]:
     """Turn one file's diff into hunks that apply in order, each on top of the previous ones."""
     lines = split_lines(file_block)
@@ -617,6 +626,10 @@ def _parse_file_block(
         if HUNK_HEADER.match(line.rstrip("\n")):
             raw_hunks.append([])
         raw_hunks[-1].append(line)
+
+    # A new file's blocks usually land in one commit, so it is split at blank
+    # lines only on request.
+    split_on_blank_lines = split_on_blank_lines and (split_new_files or not file_diff.is_new)
 
     hunks: list[Hunk] = []
     # Net lines added by this file's earlier sub-hunks: shifts the old-side
@@ -662,12 +675,17 @@ def _parse_file_block(
 
 
 def parse_all_hunks(
-    diff_text: str, min_context: int = SPLIT_CONTEXT, hunk_per_line: bool = False, split_on_blank_lines: bool = True
+    diff_text: str,
+    min_context: int = SPLIT_CONTEXT,
+    hunk_per_line: bool = False,
+    split_on_blank_lines: bool = True,
+    split_new_files: bool = False,
 ) -> list[Hunk]:
     """Parse a unified diff into one hunk per temp commit.
 
     Hunks are split like `git add -p` 's', then at blank lines between
-    sibling blocks (unless *split_on_blank_lines* is False), or with *hunk_per_line* at
+    sibling blocks (unless *split_on_blank_lines* is False, or the file is new
+    and *split_new_files* is False), or with *hunk_per_line* at
     every changed line. Each hunk's old-side offset
     accounts for the earlier hunks in its file, so applying the hunks in
     order, each on top of the previous ones, reproduces the diff.
@@ -680,7 +698,9 @@ def parse_all_hunks(
     # Each file's block runs from its "diff --git" line to the next one.
     for file_index, start in enumerate(file_starts):
         end = file_starts[file_index + 1] if file_index + 1 < len(file_starts) else len(diff_text)
-        hunks.extend(_parse_file_block(diff_text[start:end], min_context, hunk_per_line, split_on_blank_lines))
+        hunks.extend(
+            _parse_file_block(diff_text[start:end], min_context, hunk_per_line, split_on_blank_lines, split_new_files)
+        )
     return hunks
 
 
@@ -1054,7 +1074,11 @@ def _commit_hunks(hunks: list[Hunk], messages: list[str], head_sha: str) -> str:
 
 
 def slice_hunks(
-    paths: list[str], min_context: int = SPLIT_CONTEXT, hunk_per_line: bool = False, split_on_blank_lines: bool = True
+    paths: list[str],
+    min_context: int = SPLIT_CONTEXT,
+    hunk_per_line: bool = False,
+    split_on_blank_lines: bool = True,
+    split_new_files: bool = False,
 ) -> int:
     """Decompose the staged diff into one commit per hunk, or with *hunk_per_line* per changed line.
 
@@ -1068,7 +1092,7 @@ def slice_hunks(
     except sh.ErrorReturnCode:
         return 0
 
-    hunks = parse_all_hunks(diff_text, min_context, hunk_per_line, split_on_blank_lines)
+    hunks = parse_all_hunks(diff_text, min_context, hunk_per_line, split_on_blank_lines, split_new_files)
     if not hunks:
         return 0
 
@@ -1206,6 +1230,13 @@ SplitOnBlankLinesOption = Annotated[
         ),
     ),
 ]
+SplitNewFilesOption = Annotated[
+    bool,
+    typer.Option(
+        "--split-new-files/--no-split-new-files",
+        help=("Also split new files at blank lines. Off by default: a new file's blocks usually land in one commit."),
+    ),
+]
 
 
 @app.callback()
@@ -1233,6 +1264,7 @@ def slice_command(
     split_context: SplitContextOption = SPLIT_CONTEXT,
     hunk_per_line: HunkPerLineOption = False,
     split_on_blank_lines: SplitOnBlankLinesOption = True,
+    split_new_files: SplitNewFilesOption = False,
     from_commit: Annotated[
         str | None,
         typer.Option(
@@ -1263,7 +1295,11 @@ def slice_command(
 
     print("Slicing hunks into atomic commits...\n")
     n = slice_hunks(
-        paths, min_context=split_context, hunk_per_line=hunk_per_line, split_on_blank_lines=split_on_blank_lines
+        paths,
+        min_context=split_context,
+        hunk_per_line=hunk_per_line,
+        split_on_blank_lines=split_on_blank_lines,
+        split_new_files=split_new_files,
     )
 
     if n == 0:

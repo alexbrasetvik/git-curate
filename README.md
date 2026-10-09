@@ -18,7 +18,7 @@ Existing tools stage whole files (`git add <file>`). They can't drive `git add -
 
 The workflow has three steps:
 
-1. **Slice**: `git-curate slice` creates one temporary commit per diff hunk, with no reasoning. Hunks are split the way `git add -p`'s `s` command splits them, and also at blank lines between sibling blocks of added or removed lines, such as two new functions.
+1. **Slice**: `git-curate slice` creates one temporary commit per diff hunk, with no reasoning. Hunks are split the way `git add -p`'s `s` command splits them, and also at blank lines between sibling blocks of added or removed lines, such as two new functions. A new file is not split at blank lines unless you pass `--split-new-files`.
 2. **Group** (AI): an AI agent reads the commit diffs and decides which hunks belong together, producing a JSON grouping spec.
 3. **Finalize**: `git-curate group --spec <spec>` squashes the `temp:` commits into final commits via non-interactive rebase.
 
@@ -53,7 +53,7 @@ Run `uvx git-curate` or `git curate` with no options to run the full workflow:
 
 Pick the harness with `--harness claude` or `--harness pi`, and its model with `--model`, e.g. `git curate --model=opus`. To set defaults, use `git config git-curate.harness` and `git config git-curate.model`. Without a model set, the harness uses its own default.
 
-`git curate` also takes slice's splitting options, `--split-context`, `--hunk-per-line` and `--no-split-on-blank-lines`; see `git curate slice --help`.
+`git curate` also takes slice's splitting options, `--split-context`, `--hunk-per-line`, `--no-split-on-blank-lines` and `--split-new-files`; see `git curate slice --help`.
 
 ### Slicing
 
@@ -146,7 +146,7 @@ uvx git-curate log <base>
 
 Squashing commits is trivial. Splitting them is hard. Mix flour and water into dough and you can't separate them back out.
 
-`slice` errs toward maximum granularity. It splits hunks further at blank lines between blocks at the same indentation, so adjacent new functions or paragraphs land in separate `temp:` commits even with no unchanged lines between them. The agent then groups the hunks, a task that requires understanding code semantics.
+`slice` errs toward maximum granularity. It splits hunks further at blank lines between blocks at the same indentation, so adjacent new functions or paragraphs land in separate `temp:` commits even with no unchanged lines between them. New files are the exception: their blocks usually belong in one commit, so they stay whole unless you pass `--split-new-files`. The agent then groups the hunks, a task that requires understanding code semantics.
 
 ### Division of labour
 

@@ -8,7 +8,13 @@ from .abort import app as abort_app
 from .diff import app as diff_app
 from .group import app as group_app
 from .log import app as log_app
-from .slice import SPLIT_CONTEXT, HunkPerLineOption, SplitContextOption, SplitOnBlankLinesOption
+from .slice import (
+    SPLIT_CONTEXT,
+    HunkPerLineOption,
+    SplitContextOption,
+    SplitNewFilesOption,
+    SplitOnBlankLinesOption,
+)
 from .slice import app as slice_app
 from .status import app as status_app
 
@@ -98,6 +104,7 @@ def default(
     split_context: SplitContextOption = SPLIT_CONTEXT,
     hunk_per_line: HunkPerLineOption = False,
     split_on_blank_lines: SplitOnBlankLinesOption = True,
+    split_new_files: SplitNewFilesOption = False,
 ) -> None:
     """Slice staged changes and invoke the AI harness to group them into logical commits."""
     if ctx.invoked_subcommand is not None:
@@ -118,6 +125,7 @@ def default(
         split_context=split_context,
         hunk_per_line=hunk_per_line,
         split_on_blank_lines=split_on_blank_lines,
+        split_new_files=split_new_files,
     )
 
 

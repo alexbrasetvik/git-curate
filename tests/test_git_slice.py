@@ -497,11 +497,18 @@ class TestParseAllHunksBlankLines:
         new = ["X\n", *(f"c{i}\n" for i in range(5)), "one\n", "\n", "two\n", "y\n"]
         assert _replay(old, [h.lines for h in hunks]) == new
 
-    def test_new_file(self) -> None:
+    def test_new_file_stays_whole(self) -> None:
         diff = (
             "diff --git a/n b/n\nnew file mode 100644\n--- /dev/null\n+++ b/n\n@@ -0,0 +1,5 @@\n+one\n+1\n+\n+two\n+2\n"
         )
-        hunks = parse_all_hunks(diff)
+        (hunk,) = parse_all_hunks(diff)
+        assert hunk.line_desc == "L1-5"
+
+    def test_split_new_files(self) -> None:
+        diff = (
+            "diff --git a/n b/n\nnew file mode 100644\n--- /dev/null\n+++ b/n\n@@ -0,0 +1,5 @@\n+one\n+1\n+\n+two\n+2\n"
+        )
+        hunks = parse_all_hunks(diff, split_new_files=True)
         assert [h.line_desc for h in hunks] == ["L1-3", "L1-5"]
         assert _replay([], [h.lines for h in hunks]) == ["one\n", "1\n", "\n", "two\n", "2\n"]
 
@@ -509,8 +516,15 @@ class TestParseAllHunksBlankLines:
         diff = (
             "diff --git a/n b/n\nnew file mode 100644\n--- /dev/null\n+++ b/n\n@@ -0,0 +1,5 @@\n+one\n+1\n+\n+two\n+2\n"
         )
-        (hunk,) = parse_all_hunks(diff, split_on_blank_lines=False)
+        (hunk,) = parse_all_hunks(diff, split_on_blank_lines=False, split_new_files=True)
         assert hunk.line_desc == "L1-5"
+
+    def test_renamed_file_still_splits(self) -> None:
+        diff = (
+            "diff --git a/o b/n\nsimilarity index 80%\nrename from o\nrename to n\n--- a/o\n+++ b/n\n"
+            "@@ -1,2 +1,5 @@\n x\n+one\n+\n+two\n y\n"
+        )
+        assert len(parse_all_hunks(diff)) == 2
 
     def test_no_split_on_blank_lines_still_splits_at_context(self) -> None:
         body = ["-x\n", "+X\n", *(f" c{i}\n" for i in range(5)), "+one\n", "+\n", "+two\n", " y\n"]
@@ -988,7 +1002,13 @@ class TestSliceCommand:
         base = str(git("rev-parse", "HEAD", _cwd=git_repo)).strip()
 
         slice_command(
-            paths=[], dry_run=False, all_changes=False, split_context=4, split_on_blank_lines=False, from_commit=None
+            paths=[],
+            dry_run=False,
+            all_changes=False,
+            split_context=4,
+            split_on_blank_lines=False,
+            split_new_files=True,
+            from_commit=None,
         )
 
         assert str(git("rev-list", "--count", f"{base}..HEAD", _cwd=git_repo)).strip() == "1"

@@ -170,8 +170,9 @@ def test_failed_attempt_kept_without_prompt_under_yes(staged_repo: Path, monkeyp
 @pytest.mark.parametrize(
     ("args", "expected"),
     [
-        ([], 2),
-        (["--no-split-on-blank-lines"], 1),
+        ([], 1),
+        (["--split-new-files"], 2),
+        (["--split-new-files", "--no-split-on-blank-lines"], 1),
         (["--hunk-per-line"], 4),
     ],
 )

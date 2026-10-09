@@ -236,7 +236,9 @@ def _run_rewrite(
 # ── Slice helper ─────────────────────────────────────────────────────────────
 
 
-def _slice_changes(all_changes: bool, split_context: int, hunk_per_line: bool, split_on_blank_lines: bool) -> None:
+def _slice_changes(
+    all_changes: bool, split_context: int, hunk_per_line: bool, split_on_blank_lines: bool, split_new_files: bool
+) -> None:
     """Turn staged changes into one temp commit per hunk.
 
     With --all, first stage everything in the working tree so that untracked
@@ -246,7 +248,11 @@ def _slice_changes(all_changes: bool, split_context: int, hunk_per_line: bool, s
     if all_changes:
         git("add", "-A")
     n = slice_hunks(
-        paths=[], min_context=split_context, hunk_per_line=hunk_per_line, split_on_blank_lines=split_on_blank_lines
+        paths=[],
+        min_context=split_context,
+        hunk_per_line=hunk_per_line,
+        split_on_blank_lines=split_on_blank_lines,
+        split_new_files=split_new_files,
     )
     if n == 0:
         print(
@@ -343,6 +349,7 @@ def curate(
     split_context: int = SPLIT_CONTEXT,
     hunk_per_line: bool = False,
     split_on_blank_lines: bool = True,
+    split_new_files: bool = False,
 ) -> None:
     existing_base = resolve_base()
 
@@ -367,7 +374,7 @@ def curate(
     # Skipped when continuing an existing session (existing_base is not None),
     # because the temp commits from the previous run are still intact.
     if existing_base is None:
-        _slice_changes(all_changes, split_context, hunk_per_line, split_on_blank_lines)
+        _slice_changes(all_changes, split_context, hunk_per_line, split_on_blank_lines, split_new_files)
 
     # Resolve the base SHA now that slicing (if any) has completed.
     base_sha = resolve_base()

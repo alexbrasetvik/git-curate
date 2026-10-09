@@ -237,6 +237,16 @@ def test_rewrite_from_branch_keeps_its_tip(git_repo: Path, args: list[str]) -> N
     assert all(c.message.startswith("temp: a.py") for c in temp_commits)
 
 
+@pytest.mark.parametrize("args", [["--rewrite-branch"], ["--rewrite-branch", "--yes", "--dry-run"]])
+def test_rewrite_branch_without_value_detects_main(git_repo: Path, args: list[str]) -> None:
+    main_tip = _commit_on_feature_branch(git_repo)
+
+    result = runner.invoke(app, ["--yes", "--dry-run", *args])
+
+    assert result.exit_code == 0, result.output
+    assert resolve_base() == main_tip
+
+
 def test_group_splits_changes_to_the_same_line(git_repo: Path) -> None:
     first = _commit_same_line_twice(git_repo)
     runner.invoke(app, ["slice", "--from", first])

@@ -136,6 +136,15 @@ class TestAnalyze:
         _, out = _run("analyze", "--trunk", "main")
         assert out["commits"][2]["requires"] == [_short(rm)]
 
+    def test_skipped_commits_are_carried_into_later_merges(self, feature: Path, commit: CommitFn) -> None:
+        a = commit("A", f="1\n2\n3\n", g="1\n2\n3\n4\n5\n")
+        commit("Edit g top", g="G\n2\n3\n4\n5\n")
+        commit("Edit f", f="1\nF\n3\n")
+        commit("Edit g bottom", g="G\n2\n3\n4\nB\n")
+        _, out = _run("analyze", "--trunk", "main")
+        assert out["commits"][2]["requires"] == [_short(a)]
+        assert out["commits"][3]["requires"] == [_short(a)]
+
     def test_rejects_merge_commits(self, feature: Path, commit: CommitFn) -> None:
         commit("A", a="a\n")
         git.checkout("-q", "-b", "side", "main")

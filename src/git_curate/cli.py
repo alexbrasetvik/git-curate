@@ -18,6 +18,7 @@ from .slice import (
     SquashFirstOption,
 )
 from .slice import app as slice_app
+from .stack import app as stack_app
 from .status import app as status_app
 
 
@@ -45,6 +46,7 @@ app.add_typer(diff_app, name="diff")
 app.add_typer(log_app, name="log")
 app.add_typer(status_app, name="status")
 app.add_typer(abort_app, name="abort")
+app.add_typer(stack_app, name="stack")
 
 
 def _print_version(value: bool) -> None:

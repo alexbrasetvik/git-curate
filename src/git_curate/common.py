@@ -145,12 +145,58 @@ def find_slice_base() -> str:
     return str(git("rev-list", "--max-parents=0", "HEAD")).strip()
 
 
+def _other_branch_ref(ref: str) -> str | None:
+    """Return the full ref name if *ref* names a branch other than the checked-out one.
+
+    HEAD and the current branch's own name resolve to the current branch, so
+    they count as plain commits.
+    """
+    try:
+        full = str(git("rev-parse", "--symbolic-full-name", ref)).strip()
+    except sh.ErrorReturnCode:
+        return None
+    if not full.startswith(("refs/heads/", "refs/remotes/")):
+        return None
+    try:
+        current = str(git("symbolic-ref", "-q", "HEAD")).strip()
+    except sh.ErrorReturnCode:
+        current = ""  # detached HEAD
+    return None if full == current else full
+
+
+def resolve_branch_base(branch: str) -> str:
+    """Return the tip SHA of *branch*, requiring HEAD to be rebased on it.
+
+    The commits to rewrite are then exactly branch..HEAD, so none of the
+    branch's own commits are rewritten.
+    """
+    try:
+        tip = str(git("rev-parse", "--verify", f"{branch}^{{commit}}")).strip()
+    except sh.ErrorReturnCode as e:
+        print(f"fatal: not a valid branch: {branch!r}", file=sys.stderr)
+        raise InvalidRefError() from e
+    try:
+        git("merge-base", "--is-ancestor", tip, "HEAD")
+    except sh.ErrorReturnCode as e:
+        print(
+            f"error: HEAD is not rebased on {branch!r}.\nRun `git rebase {branch}` first.",
+            file=sys.stderr,
+        )
+        raise NotRebasedError() from e
+    return tip
+
+
 def resolve_rewrite_from(from_ref: str) -> str:
     """Validate *from_ref* as an ancestor of HEAD and return its parent SHA.
+
+    A branch other than the current one is a base rather than a commit to
+    rewrite: HEAD must be rebased on it, and its tip is returned instead.
 
     Used by ``slice --from`` and the top-level rewrite flow.  The caller is
     responsible for the actual ``git reset --soft <parent>``.
     """
+    if _other_branch_ref(from_ref) is not None:
+        return resolve_branch_base(from_ref)
     try:
         from_sha = str(git("rev-parse", "--verify", from_ref)).strip()
     except sh.ErrorReturnCode as e:
@@ -286,6 +332,10 @@ class NotAncestorError(Exit):
 
 
 class RootCommitError(Exit):
+    pass
+
+
+class NotRebasedError(Exit):
     pass
 
 

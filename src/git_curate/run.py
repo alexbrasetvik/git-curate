@@ -16,6 +16,7 @@ from .common import (
     git,
     load_failed_attempt,
     resolve_base,
+    resolve_branch_base,
     resolve_rewrite_from,
 )
 from .harness import get_harness, resolve_harness_name, resolve_model
@@ -66,13 +67,7 @@ def _resolve_rewrite_parent(
         return resolve_rewrite_from(rewrite_from)
 
     if rewrite_branch is not None:
-        target = rewrite_branch if rewrite_branch else _find_closest_base_branch()
-        try:
-            merge_base = str(git("merge-base", "HEAD", target)).strip()
-        except sh.ErrorReturnCode as e:
-            print(f"error: could not find merge-base with branch {target!r}", file=sys.stderr)
-            raise Exit() from e
-        return merge_base
+        return resolve_branch_base(rewrite_branch or _find_closest_base_branch())
 
     return None
 

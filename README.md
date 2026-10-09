@@ -101,6 +101,8 @@ uvx git-curate slice --from abc1234
 
 Each commit is sliced on its own, so a line that two commits changed in turn keeps both changes, and the agent can put them in different final commits. Each `temp:` commit names its original commit in a `Curate-Source:` trailer. Pass `--squash-first` to squash the commits and slice their combined diff instead. `git curate --rewrite-from` and `--rewrite-branch` work the same way.
 
+Given another branch, as in `--from main`, the branch's tip is the base and is not rewritten: only `main..HEAD` is. HEAD must be rebased on that branch first. `--rewrite-branch` requires the same.
+
 ### Grouping
 
 After slicing, write the diff to disk for the agent:

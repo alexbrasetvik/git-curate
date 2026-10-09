@@ -72,7 +72,10 @@ def default(
         typer.Option(
             "--rewrite-from",
             metavar="COMMIT",
-            help="Rewrite commits from COMMIT (inclusive), re-slicing each commit.",
+            help=(
+                "Rewrite commits from COMMIT (inclusive), re-slicing each commit. "
+                "Given another branch, rewrite only the commits since it; HEAD must be rebased on it."
+            ),
         ),
     ] = None,
     rewrite_branch: Annotated[
@@ -81,7 +84,7 @@ def default(
             "--rewrite-branch",
             metavar="BRANCH",
             help=(
-                "Rewrite commits since the merge-base with BRANCH, re-slicing each commit. "
+                "Rewrite commits since BRANCH, re-slicing each commit; HEAD must be rebased on BRANCH. "
                 "Omit BRANCH to auto-detect main or master."
             ),
         ),

@@ -1355,6 +1355,7 @@ def slice_command(
             "--from",
             help=(
                 "Re-slice commits from this SHA (inclusive), one commit at a time, "
+                "or the commits since this branch, which HEAD must be rebased on, "
                 "then slice any currently staged changes on top. "
                 "Useful when you want to rewrite existing commits at the hunk level."
             ),

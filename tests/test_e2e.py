@@ -247,6 +247,33 @@ def test_rewrite_branch_without_value_detects_main(git_repo: Path, args: list[st
     assert resolve_base() == main_tip
 
 
+@pytest.mark.parametrize("args", [["--rewrite-from", "main"], ["--rewrite-branch", "main"]])
+def test_rewrite_from_branch_requires_rebase(git_repo: Path, args: list[str]) -> None:
+    _commit_on_feature_branch(git_repo)
+    git.checkout("main")
+    (git_repo / "b.py").write_text("b = 1\n")
+    git.add("b.py")
+    git.commit("--no-verify", "-m", "Add b")
+    git.checkout("feature")
+    head = str(git("rev-parse", "HEAD")).strip()
+
+    result = runner.invoke(app, [*args, "--yes", "--dry-run"])
+
+    assert result.exit_code != 0
+    assert "git rebase main" in result.output
+    assert str(git("rev-parse", "HEAD")).strip() == head
+
+
+@pytest.mark.parametrize("ref", ["HEAD", "feature"])
+def test_rewrite_from_current_branch_rewrites_its_tip(git_repo: Path, ref: str) -> None:
+    main_tip = _commit_on_feature_branch(git_repo)
+
+    result = runner.invoke(app, ["--rewrite-from", ref, "--yes", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert resolve_base() == main_tip
+
+
 def test_group_splits_changes_to_the_same_line(git_repo: Path) -> None:
     first = _commit_same_line_twice(git_repo)
     runner.invoke(app, ["slice", "--from", first])

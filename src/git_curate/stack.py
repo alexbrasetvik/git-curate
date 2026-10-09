@@ -124,6 +124,31 @@ def merge_trees(base: str, ours: str, theirs: str) -> str | Conflict:
     return lines[0]
 
 
+def merge_batch(merges: list[tuple[str, str, str]]) -> list[str | Conflict]:
+    """Like merge_trees for each (base, ours, theirs), in one git process."""
+    if not merges:
+        return []
+    out = str(
+        git(
+            "merge-tree",
+            "--stdin",
+            "--write-tree",
+            "--name-only",
+            "--no-messages",
+            _in="".join(f"{base} -- {ours} {theirs}\n" for base, ours, theirs in merges),
+        )
+    )
+    # Each merge prints NUL-terminated fields: a status (1 clean, 0 conflict),
+    # the tree, any conflicted paths, then an empty field.
+    fields = iter(out.split("\0"))
+    results: list[str | Conflict] = []
+    for _ in merges:
+        status, tree = next(fields), next(fields)
+        paths = list(iter(fields.__next__, ""))
+        results.append(tree if status == "1" else Conflict(paths=paths))
+    return results
+
+
 def _parent(sha: str) -> str:
     return str(git("rev-parse", f"{sha}^")).strip()
 

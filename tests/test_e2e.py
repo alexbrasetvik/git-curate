@@ -221,6 +221,22 @@ def _commit_on_feature_branch(git_repo: Path) -> str:
     return main_tip
 
 
+@pytest.mark.parametrize(
+    "args",
+    [["--rewrite-from", "main"], ["--rewrite-branch", "main"], ["slice", "--from", "main"]],
+)
+def test_rewrite_from_branch_keeps_its_tip(git_repo: Path, args: list[str]) -> None:
+    main_tip = _commit_on_feature_branch(git_repo)
+
+    result = runner.invoke(app, args if args[0] == "slice" else ["--yes", "--dry-run", *args])
+
+    assert result.exit_code == 0, result.output
+    assert resolve_base() == main_tip
+    temp_commits = list_commits(main_tip)
+    assert temp_commits
+    assert all(c.message.startswith("temp: a.py") for c in temp_commits)
+
+
 def test_group_splits_changes_to_the_same_line(git_repo: Path) -> None:
     first = _commit_same_line_twice(git_repo)
     runner.invoke(app, ["slice", "--from", first])

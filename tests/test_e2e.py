@@ -209,3 +209,19 @@ def test_rewrite_slices_each_commit(git_repo: Path, args: list[str], expected: i
     assert (git_repo / "README.md").read_text() == "# repo v3\n"
 
 
+def test_group_splits_changes_to_the_same_line(git_repo: Path) -> None:
+    first = _commit_same_line_twice(git_repo)
+    runner.invoke(app, ["slice", "--from", first])
+    base = resolve_base()
+    assert base is not None
+    v2, v3 = (c.message for c in list_commits(base))
+
+    # Each change to the line becomes its own final commit.
+    spec = git_repo / ".git" / "spec.json"
+    groups = [{"message": "Bump to v2", "commits": [v2]}, {"message": "Bump to v3", "commits": [v3]}]
+    spec.write_text(json.dumps(groups))
+    result = runner.invoke(app, ["group", "--spec", str(spec)])
+
+    assert result.exit_code == 0, result.output
+    assert str(git.log("--format=%s", "-2")).splitlines() == ["Bump to v3", "Bump to v2"]
+    assert "+# repo v2" in str(git.show("HEAD~1"))

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
+from typer.core import TyperGroup
 
 from .abort import app as abort_app
 from .diff import app as diff_app
@@ -19,7 +20,25 @@ from .slice import (
 from .slice import app as slice_app
 from .status import app as status_app
 
-app = typer.Typer()
+
+class _RootGroup(TyperGroup):
+    """Lets --rewrite-branch be given without a value.
+
+    Typer can't make an option's value optional, so without this the option
+    always demands a BRANCH, or takes the next option (e.g. ``--yes``) as one.
+    """
+
+    def parse_args(self, ctx: Any, args: list[str]) -> list[str]:
+        args = list(args)
+        for i, arg in enumerate(args):
+            if arg == "--rewrite-branch" and (i + 1 == len(args) or args[i + 1].startswith("-")):
+                # An empty BRANCH means auto-detect main or master.
+                args.insert(i + 1, "")
+                break
+        return super().parse_args(ctx, args)
+
+
+app = typer.Typer(cls=_RootGroup)
 app.add_typer(slice_app, name="slice")
 app.add_typer(group_app, name="group")
 app.add_typer(diff_app, name="diff")
@@ -61,8 +80,6 @@ def default(
         typer.Option(
             "--rewrite-branch",
             metavar="BRANCH",
-            is_flag=False,
-            flag_value="",
             help=(
                 "Rewrite commits since the merge-base with BRANCH, re-slicing each commit. "
                 "Omit BRANCH to auto-detect main or master."

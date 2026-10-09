@@ -162,15 +162,15 @@ Then scan the other groups' diffs for any use of each introduced name. If group 
 
 Adjust the ordering before writing the spec. This catches producer/consumer pairs that live in different files and look unrelated at the semantic level.
 
-#### Ordering within a group when multiple slicing sessions touched the same file
+#### Commits that change the same line in turn
 
-When a single logical group contains commits from **more than one slicing session** that both modify the same file region, the ordering of those commits within the group must follow their original chronological order (as they appear in the diff, oldest at the bottom). Reordering them will cause patch conflicts during the rebase even though they belong to the same logical change.
+Several `temp:` commits can change the same line, one after another. This happens when more than one slicing session touched a file, or when existing commits were rewritten: each original commit is sliced on its own, and its `temp:` commits carry a `Curate-Source:` trailer naming the commit they came from. For example, one commit renames `foo` to `bar` on an import line, and a later one changes it from `bar` to `bar, baz`.
 
-The tell: if you notice that session N's commit to file F changes a line that session N-1 already modified in that same area — for example, session 1 changes an import line from `foo` to `bar`, then session 2 further changes it from `bar` to `bar, baz` — then session 1's commit must appear before session 2's commit in the spec's `commits` list for that group.
+Such commits can go in separate groups when they are separate logical changes, such as a rename and a new parameter on the same line. The group holding the earlier change must then come first. If they are the same logical change, put them in one group: the result is their combined change. Within a group, `group` applies commits in their original order, whatever order the spec lists them in.
 
-This comes up most often with import blocks and small utility functions that were touched iteratively across sessions. When in doubt, keep the commits in the order they appear in the diff (which is reverse-chronological, so bottom = oldest = first in the spec).
+The `Curate-Source:` trailers show how the original author split the work. Use them as hints, not as a grouping to reproduce.
 
-**Explicit ordering constraints:** When hunk-range overlaps are detected, an **Ordering constraints** section appears at the end of this prompt listing the affected pairs. Every listed pair is a hard requirement — the `group` command will reject a spec that violates one. Honour all listed constraints: place the earlier commit first in its `commits` array and ensure its group appears before the later commit's group in the top-level list.
+**Explicit ordering constraints:** When hunk-range overlaps are detected, an **Ordering constraints** section appears at the end of this prompt listing the affected pairs. Every listed pair is a hard requirement — the `group` command will reject a spec that violates one. When the two commits of a pair are in different groups, the earlier commit's group must come first in the top-level list.
 
 ### Commit authoring
 

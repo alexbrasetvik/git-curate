@@ -170,6 +170,8 @@ Such commits can go in separate groups when they are separate logical changes, s
 
 The `Curate-Source:` trailers show how the original author split the work. Use them as hints, not as a grouping to reproduce.
 
+`group` sets each final commit's author from these trailers: the author of the group's last change becomes its author, and the others become `Co-authored-by:` trailers. Do not write authorship trailers yourself.
+
 **Explicit ordering constraints:** When hunk-range overlaps are detected, an **Ordering constraints** section appears at the end of this prompt listing the affected pairs. Every listed pair is a hard requirement — the `group` command will reject a spec that violates one. When the two commits of a pair are in different groups, the earlier commit's group must come first in the top-level list.
 
 ### Commit authoring

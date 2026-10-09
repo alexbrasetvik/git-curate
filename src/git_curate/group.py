@@ -41,6 +41,9 @@ Algorithm:
    followed by an "exec git commit --amend -F <file> --reset-author"
    to set the final message and restore the real author; the rest get
    "fixup". Ungrouped commits get plain "pick".
+   When the temp commits were sliced from existing commits, the amend uses
+   --author and --date from those commits instead, and the other authors
+   become Co-authored-by trailers (see authors.py).
    Each commit message goes into a file under the git dir so newlines and special
    characters don't break the plan.
 5. Set GIT_SEQUENCE_EDITOR to a script that replaces the rebase todo
@@ -71,6 +74,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import sys
 import textwrap
@@ -80,6 +84,7 @@ from typing import Annotated
 import sh
 import typer
 
+from .authors import Ident, add_coauthor_trailers, plan_authorship
 from .common import (
     GIT_ENV,
     SHA_DISPLAY_LEN,
@@ -109,6 +114,10 @@ class Group:
 @dataclass
 class AmendEntry:
     message: str
+    # Set by attribute_authors when the group was sliced from existing
+    # commits; None means --reset-author.
+    author: Ident | None = None
+    date: str | None = None
 
 
 def resolve_message_to_sha(
@@ -202,8 +211,8 @@ def build_rebase_plan(
         group_shas.sort(key=position.__getitem__)
 
         # First commit in the group: pick it, then amend its message.
-        # --reset-author (applied later) restores the real user identity;
-        # temp commits carry the Git Curate <git-curate@local> author.
+        # The amend (applied later) replaces the Git Curate <git-curate@local>
+        # author of the temp commits; see attribute_authors.
         todo_lines.append(f"pick {group_shas[0]}")
         todo_lines.append(AmendEntry(group.message))
 
@@ -227,9 +236,51 @@ def build_rebase_plan(
     return todo_lines
 
 
+def attribute_authors(plan: list[str | AmendEntry]) -> None:
+    """Give each AmendEntry in *plan* the authorship of the commits it squashes.
+
+    A group's commits are the pick before its AmendEntry and the fixups after
+    it. Groups not sliced from existing commits keep --reset-author.
+    """
+    entries: list[AmendEntry] = []
+    groups: list[list[str]] = []
+    for i, entry in enumerate(plan):
+        if not isinstance(entry, AmendEntry):
+            continue
+        shas = [str(plan[i - 1]).split()[1]]
+        for later in plan[i + 1 :]:
+            if not (isinstance(later, str) and later.startswith("fixup ")):
+                break
+            shas.append(later.split()[1])
+        entries.append(entry)
+        groups.append(shas)
+    if not groups:
+        return
+
+    for entry, authorship in zip(entries, plan_authorship(groups), strict=True):
+        if authorship is None:
+            continue
+        entry.author = authorship.author
+        entry.date = authorship.date
+        entry.message = add_coauthor_trailers(entry.message, authorship.coauthors)
+
+
 # ---------------------------------------------------------------------------
 # Rebase execution
 # ---------------------------------------------------------------------------
+
+
+def _amend_command(entry: AmendEntry, msg_path: str) -> str:
+    """Return the exec line that gives the picked commit *entry*'s message and author."""
+    cmd = ["git", "commit", "--amend", "-F", msg_path]
+    if entry.author is None:
+        # Restore the real user identity on temp commits that carry the
+        # Git Curate <git-curate@local> author.
+        cmd.append("--reset-author")
+    else:
+        # --amend keeps the temp commit's author date unless told otherwise.
+        cmd += [f"--author={entry.author}", f"--date={entry.date}"]
+    return "exec " + shlex.join(cmd)
 
 
 def _expand_plan_to_todo_lines(plan: list[str | AmendEntry], tmpdir: str) -> list[str]:
@@ -248,9 +299,7 @@ def _expand_plan_to_todo_lines(plan: list[str | AmendEntry], tmpdir: str) -> lis
             msg_path = os.path.join(tmpdir, f"msg_{amend_idx}.txt")
             with open(msg_path, "w") as f:
                 f.write(entry.message)
-            # --reset-author: restore real user identity after squashing temp
-            # commits that carry the Git Curate <git-curate@local> author.
-            todo_lines.append(f"exec git commit --amend -F '{msg_path}' --reset-author")
+            todo_lines.append(_amend_command(entry, msg_path))
             amend_idx += 1
         else:
             todo_lines.append(entry)
@@ -383,7 +432,8 @@ def _print_rebase_plan(commits: list[Commit], groups: list[Group], todo_lines: l
             # Show only the first line of multi-line messages to keep output readable.
             first_line = entry.message.split("\n")[0]
             suffix = "..." if "\n" in entry.message else ""
-            print(f"  exec git commit --amend -m '{first_line}{suffix}'")
+            author = f" --author='{entry.author}'" if entry.author is not None else ""
+            print(f"  exec git commit --amend -m '{first_line}{suffix}'{author}")
         else:
             print(f"  {entry}")
     print()
@@ -503,6 +553,7 @@ def group_command(
     if deps:
         _check_ordering_constraints(todo_lines, deps, commits)
 
+    attribute_authors(todo_lines)
     _print_rebase_plan(commits, groups, todo_lines)
 
     if dry_run:

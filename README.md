@@ -103,6 +103,10 @@ Each commit is sliced on its own, so a line that two commits changed in turn kee
 
 Given another branch, as in `--from main`, the branch's tip is the base and is not rewritten: only `main..HEAD` is. HEAD must be rebased on that branch first. `--rewrite-branch` requires the same.
 
+Rewritten commits keep their authors. Each final commit's author is the author of its last change, with that change's date. Every other author, and every `Co-authored-by:` trailer on the original commits, becomes a `Co-authored-by:` trailer. You become the committer.
+
+With `--squash-first`, only the last version of each line survives, so git-curate blames the range to find where lines came from. An added line is credited to the commit that wrote it, and a deleted line to the commit that deleted it. A line that Alice changed and Bob changed again credits both. When one author wrote the whole range, without co-authors, blame is skipped.
+
 ### Grouping
 
 After slicing, write the diff to disk for the agent:

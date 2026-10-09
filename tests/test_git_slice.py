@@ -1187,3 +1187,112 @@ class TestSliceCommand:
         author_emails = str(git.log("--format=%ae", f"{parent_sha}..HEAD", _cwd=git_repo)).strip()
         for email in author_emails.splitlines():
             assert email.strip() == "git-curate@local"
+
+
+# ---------------------------------------------------------------------------
+# slice_commits: rewriting existing commits one commit at a time
+# ---------------------------------------------------------------------------
+
+
+def _tree(rev: str) -> str:
+    return str(git("rev-parse", f"{rev}^{{tree}}")).strip()
+
+
+@pytest.fixture()
+def same_line_commits(git_repo: Path) -> tuple[str, str]:
+    """Three commits on init: add f.py, then change its second line twice. Returns (first sha, HEAD)."""
+    f = git_repo / "f.py"
+    f.write_text("a = 1\nb = 1\nc = 1\n")
+    git.add("f.py")
+    git.commit("--no-verify", "-m", "Add f.py")
+    first = str(git("rev-parse", "HEAD")).strip()
+    for value, message in (("2", "Change b"), ("3", "Change b again")):
+        f.write_text(f"a = 1\nb = {value}\nc = 1\n")
+        git.commit("--no-verify", "-am", message)
+    return first, str(git("rev-parse", "HEAD")).strip()
+
+
+class TestSliceCommits:
+    def test_keeps_each_change_to_a_line(self, same_line_commits: tuple[str, str]) -> None:
+        first, head = same_line_commits
+
+        assert slice_mod.slice_commits(f"{first}^") == 3
+
+        # One temp commit per original commit, each with that commit's change.
+        commits = str(git.log("--reverse", "--format=%H", f"{first}^..HEAD")).split()
+        assert len(commits) == 3
+        assert "+b = 2" in str(git.show(commits[1]))
+        assert "-b = 2\n+b = 3" in str(git.show(commits[2]))
+        assert _tree("HEAD") == _tree(head)
+
+    def test_names_the_source_commit(self, same_line_commits: tuple[str, str]) -> None:
+        first, head = same_line_commits
+
+        slice_mod.slice_commits(f"{first}^")
+
+        body = str(git.log("-1", "--format=%b")).strip()
+        assert body == f"Curate-Source: {head[:12]} Change b again"
+        # The subject alone stays the temp message that group and deps match on.
+        assert str(git.log("-1", "--format=%s")).startswith("temp: f.py:L")
+
+    def test_numbers_temp_commits_across_source_commits(self, same_line_commits: tuple[str, str]) -> None:
+        first, _ = same_line_commits
+
+        slice_mod.slice_commits(f"{first}^")
+
+        subjects = str(git.log("--reverse", "--format=%s", f"{first}^..HEAD")).splitlines()
+        assert [s.rsplit("-", 1)[1] for s in subjects] == ["1", "2", "3"]
+
+    def test_leaves_index_and_working_tree_alone(self, git_repo: Path, same_line_commits: tuple[str, str]) -> None:
+        first, _ = same_line_commits
+        (git_repo / "f.py").write_text("a = 1\nb = 3\nc = 9\n")
+        git.add("f.py")
+
+        slice_mod.slice_commits(f"{first}^")
+
+        assert str(git.diff("--cached")).count("+c = 9") == 1
+        assert (git_repo / "f.py").read_text() == "a = 1\nb = 3\nc = 9\n"
+
+    def test_pure_rename_fails_without_moving_head(self, git_repo: Path, same_line_commits: tuple[str, str]) -> None:
+        first, head = same_line_commits
+        git.mv("f.py", "g.py")
+        git.commit("--no-verify", "-m", "Rename f.py")
+        head = str(git("rev-parse", "HEAD")).strip()
+
+        with pytest.raises(SliceError, match="without hunks"):
+            slice_mod.slice_commits(f"{first}^")
+
+        assert str(git("rev-parse", "HEAD")).strip() == head
+
+    def test_base_off_the_first_parent_chain_fails(self, git_repo: Path, same_line_commits: tuple[str, str]) -> None:
+        first, head = same_line_commits
+        # A side branch merged into HEAD: its commit is not on HEAD's first-parent chain.
+        git.checkout("-b", "side", first)
+        (git_repo / "side.py").write_text("s = 1\n")
+        git.add("side.py")
+        git.commit("--no-verify", "-m", "Add side.py")
+        side = str(git("rev-parse", "HEAD")).strip()
+        git.checkout("main")
+        git.merge("--no-edit", "--no-ff", "side")
+        head = str(git("rev-parse", "HEAD")).strip()
+
+        with pytest.raises(SliceError, match="first-parent"):
+            slice_mod.slice_commits(side)
+
+        assert str(git("rev-parse", "HEAD")).strip() == head
+
+    def test_slices_a_merge_against_its_first_parent(self, git_repo: Path, same_line_commits: tuple[str, str]) -> None:
+        first, _ = same_line_commits
+        git.checkout("-b", "side", first)
+        (git_repo / "side.py").write_text("s = 1\n")
+        git.add("side.py")
+        git.commit("--no-verify", "-m", "Add side.py")
+        git.checkout("main")
+        git.merge("--no-edit", "--no-ff", "side")
+        head = str(git("rev-parse", "HEAD")).strip()
+
+        # Add f.py, Change b, Change b again, and the merge bringing in side.py.
+        assert slice_mod.slice_commits(f"{first}^") == 4
+        assert _tree("HEAD") == _tree(head)
+
+

@@ -298,7 +298,7 @@ class InvalidSpecError(Exit):
 
 
 class SliceError(Exit):
-    """The staged diff can't be sliced: something unsupported, or a result that doesn't match the index."""
+    """The diff can't be sliced: something unsupported, or a result that doesn't match the index or commit."""
 
     def __init__(self, reason: str) -> None:
         super().__init__()

@@ -1124,6 +1124,65 @@ def slice_hunks(
     return len(hunks)
 
 
+def slice_commits(
+    base: str,
+    min_context: int = SPLIT_CONTEXT,
+    hunk_per_line: bool = False,
+    split_on_blank_lines: bool = True,
+    split_new_files: bool = False,
+) -> int:
+    """Replace the commits in base..HEAD with temp commits, slicing each commit's own diff.
+
+    Unlike squashing the range and slicing the result, a line that two commits
+    change in turn keeps both changes, as separate temp commits. Each temp
+    commit names the commit it came from in a Curate-Source trailer.
+
+    Follows first parents, so a merge commit's slices carry everything it
+    brought in. HEAD moves once, after the last commit's slices have its exact
+    tree, so HEAD, the index and the working tree are untouched if slicing fails.
+
+    Returns the number of atomic commits created.
+    """
+    head_sha = str(git("rev-parse", "HEAD")).strip()
+    base_sha = str(git("rev-parse", base)).strip()
+    sources = str(git("rev-list", "--reverse", "--first-parent", f"{base_sha}..{head_sha}")).split()
+    if not sources:
+        return 0
+    if str(git("rev-parse", f"{sources[0]}^")).strip() != base_sha:
+        reason = f"{base_sha[:SHA_DISPLAY_LEN]} is not on HEAD's first-parent chain; squash the range instead"
+        print(f"error: cannot slice: {reason}", file=sys.stderr)
+        raise SliceError(reason)
+
+    tip = base_sha
+    count = 0
+    for source in sources:
+        subject = str(git("log", "-1", "--format=%s", source)).strip()
+        print(f"{source[:SHA_DISPLAY_LEN]} {subject}")
+        diff_text = _diff([f"{source}^", source], [])
+        hunks = parse_all_hunks(diff_text, min_context, hunk_per_line, split_on_blank_lines, split_new_files)
+        try:
+            if hunks:
+                titles = [temp_commit_message(hunk, n) for n, hunk in enumerate(hunks, start=count + 1)]
+                trailer = f"Curate-Source: {source[:SHA_DISPLAY_LEN]} {subject}"
+                messages = [f"{title}\n\n{trailer}" for title in titles]
+                tip = _commit_hunks(hunks, messages, tip, _ls_tree(source), source[:SHA_DISPLAY_LEN])
+                for n, title in enumerate(titles, start=count + 1):
+                    print(f"  [{n}] {title}")
+                count += len(hunks)
+
+            # Later commits' hunks apply on top of this one's tree, so it must
+            # match exactly, including changes that have no hunks to slice.
+            if str(git("rev-parse", f"{tip}^{{tree}}")) != str(git("rev-parse", f"{source}^{{tree}}")):
+                raise SliceError(f"{source[:SHA_DISPLAY_LEN]}: has changes without hunks, such as a pure rename")
+        except SliceError as e:
+            print(f"error: cannot slice: {e.reason}", file=sys.stderr)
+            raise
+
+    # The old-value check refuses to move HEAD if it changed while slicing.
+    git("update-ref", "-m", "git-curate: slice", "HEAD", tip, head_sha)
+    return count
+
+
 # ---------------------------------------------------------------------------
 # CLI helpers
 # ---------------------------------------------------------------------------

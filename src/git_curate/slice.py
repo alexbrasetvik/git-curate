@@ -823,8 +823,8 @@ def temp_commit_message(hunk: Hunk, commit_count: int) -> str:
     return f"temp: {hunk.file_path}:{hunk.line_desc} #{diff_hash}-{commit_count}"
 
 
-def _staged_diff(paths: list[str]) -> str:
-    """Return the staged diff as text.
+def _diff(revs: list[str], paths: list[str]) -> str:
+    """Return `git diff <revs> -- <paths>` as text.
 
     Undecodable bytes survive as surrogates (surrogateescape), so content
     round-trips exactly when encoded back. The flags guard against user config
@@ -836,7 +836,7 @@ def _staged_diff(paths: list[str]) -> str:
         "-c",
         "diff.suppressBlankEmpty=false",
         "diff",
-        "--cached",
+        *revs,
         f"-U{DIFF_CONTEXT}",
         "--no-ext-diff",
         "--no-textconv",
@@ -846,6 +846,11 @@ def _staged_diff(paths: list[str]) -> str:
         _return_cmd=True,
     )
     return _decode(cmd.stdout)
+
+
+def _staged_diff(paths: list[str]) -> str:
+    """Return the staged diff as text."""
+    return _diff(["--cached"], paths)
 
 
 def _ls_tree(treeish: str) -> dict[str, tuple[str, str]]:

@@ -71,10 +71,10 @@ class TestWorktree:
         """slice_hunks should create curate-authored temp commits from a linked worktree."""
         _, wt = git_worktree
         (wt / "feature.py").write_text("x = 1\n")
-        git.add(".", _cwd=wt)
-        git.commit("--no-verify", "-m", "add feature.py", _cwd=wt)
+        git.add(".", _cwd=str(wt))
+        git.commit("--no-verify", "-m", "add feature.py", _cwd=str(wt))
         (wt / "feature.py").write_text("x = 2\n")
-        git.add("feature.py", _cwd=wt)
+        git.add("feature.py", _cwd=str(wt))
 
         n = _slice_mod.slice_hunks([])
         assert n == 1
@@ -92,10 +92,10 @@ class TestWorktree:
         _, wt = git_worktree
 
         (wt / "feature.py").write_text("x = 1\n")
-        git.add(".", _cwd=wt)
-        git.commit("--no-verify", "-m", "add feature.py", _cwd=wt)
+        git.add(".", _cwd=str(wt))
+        git.commit("--no-verify", "-m", "add feature.py", _cwd=str(wt))
         (wt / "feature.py").write_text("x = 2\n")
-        git.add("feature.py", _cwd=wt)
+        git.add("feature.py", _cwd=str(wt))
 
         _slice_mod.slice_hunks([])
 
@@ -116,8 +116,8 @@ class TestWorktree:
         _git_curate = sh.git.bake("--no-pager", "-c", "color.ui=false", _tty_out=False, _env=env)
         for i in range(2):
             (wt / f"temp{i}.py").write_text(f"x = {i}\n")
-            _git_curate.add(".", _cwd=wt)
-            _git_curate.commit("--no-verify", "-m", f"temp: temp{i}.py:L1-1", _cwd=wt)
+            _git_curate.add(".", _cwd=str(wt))
+            _git_curate.commit("--no-verify", "-m", f"temp: temp{i}.py:L1-1", _cwd=str(wt))
 
         commits = _group_mod.list_commits(base)
         assert len(commits) == 2
@@ -154,13 +154,13 @@ class TestWorktree:
 
         # Slice in wt1
         (wt1 / "f1.py").write_text("x = 1\n")
-        _git_curate.add(".", _cwd=wt1)
-        _git_curate.commit("--no-verify", "-m", "temp: f1.py:L1-1", _cwd=wt1)
+        _git_curate.add(".", _cwd=str(wt1))
+        _git_curate.commit("--no-verify", "-m", "temp: f1.py:L1-1", _cwd=str(wt1))
 
         # Slice in wt2
         (wt2 / "f2.py").write_text("y = 2\n")
-        _git_curate.add(".", _cwd=wt2)
-        _git_curate.commit("--no-verify", "-m", "temp: f2.py:L1-1", _cwd=wt2)
+        _git_curate.add(".", _cwd=str(wt2))
+        _git_curate.commit("--no-verify", "-m", "temp: f2.py:L1-1", _cwd=str(wt2))
 
         original = os.getcwd()
         try:

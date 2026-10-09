@@ -17,7 +17,7 @@ def _commit() -> str:
         return str(_build_info.commit)
     # Editable install or running from the checkout: ask git directly.
     try:
-        return str(sh.git("describe", "--always", "--dirty", "--exclude=*", _cwd=Path(__file__).parent)).strip()
+        return str(sh.git("describe", "--always", "--dirty", "--exclude=*", _cwd=str(Path(__file__).parent))).strip()
     except (sh.ErrorReturnCode, sh.CommandNotFound):
         return "unknown"
 

@@ -16,7 +16,7 @@ _runner = CliRunner()
 
 
 def _describe() -> str:
-    return str(sh.git("describe", "--always", "--dirty", "--exclude=*", _cwd=_REPO)).strip()
+    return str(sh.git("describe", "--always", "--dirty", "--exclude=*", _cwd=str(_REPO))).strip()
 
 
 def test_version_prints_version_and_commit() -> None:
@@ -27,7 +27,7 @@ def test_version_prints_version_and_commit() -> None:
 
 
 def test_wheel_records_build_commit(tmp_path: Path) -> None:
-    sh.uv("build", "--wheel", "--out-dir", tmp_path, _cwd=_REPO)
+    sh.uv("build", "--wheel", "--out-dir", tmp_path, _cwd=str(_REPO))
 
     (wheel,) = tmp_path.glob("*.whl")
     with zipfile.ZipFile(wheel) as zf:

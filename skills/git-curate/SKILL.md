@@ -27,7 +27,7 @@ This skill changes only commit history, not code. Invoke `uvx git-curate group` 
 
 Spawn a sub-agent to handle the diff reading and grouping. This keeps the parent context clean from large diff output.
 
-**Before spawning**, run step 0 to determine the session state and extract the base SHA. Then write a 3–5 sentence summary of what this session addressed: what feature or bug, key design decisions, and major areas of change.
+**Before spawning**, run step 0 to determine the session state and extract the base SHA. Read the repository's instructions file, `.git-curate.md` at the repository root, if it exists. Then write a 3–5 sentence summary of what this session addressed: what feature or bug, key design decisions, and major areas of change.
 
 Then use the Agent tool with a prompt structured exactly as follows. Do not summarize, condense, or paraphrase any part of it:
 
@@ -44,6 +44,9 @@ Session context: <your 3–5 sentence summary here>
 
 Base: <the 12-char SHA from the Base: line of `uvx git-curate status`>
 Spec path: .git/git-curate-spec.json
+
+Repository instructions:
+<paste the commit-message instructions from .git-curate.md, word for word, or "none">
 ```
 
 The parent handles step 0 (slicing). The sub-agent handles steps 1–4 only and
@@ -175,6 +178,8 @@ The `Curate-Source:` trailers show how the original author split the work. Use t
 **Explicit ordering constraints:** When hunk-range overlaps are detected, an **Ordering constraints** section appears at the end of this prompt listing the affected pairs. Every listed pair is a hard requirement — the `group` command will reject a spec that violates one. When the two commits of a pair are in different groups, the earlier commit's group must come first in the top-level list.
 
 ### Commit authoring
+
+The **Repository instructions** at the end of this prompt override the defaults below wherever they differ.
 
 The headline (first line): a capitalized, imperative summary of 50 characters or fewer. For small or obvious commits, this is enough.
 

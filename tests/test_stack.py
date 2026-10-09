@@ -89,6 +89,12 @@ def _patch_id(sha: str) -> str:
     return str(git("patch-id", "--stable", _in=str(git.show(sha, "--")))).split()[0]
 
 
+def commit_removal(message: str, path: str) -> str:
+    git.rm("-q", path)
+    git.commit("--no-verify", "-m", message)
+    return str(git("rev-parse", "HEAD")).strip()
+
+
 # ---------------------------------------------------------------------------
 # analyze
 # ---------------------------------------------------------------------------

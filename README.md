@@ -80,7 +80,7 @@ uvx git-curate slice src/auth.py src/schema.py
 To give every changed line its own temp commit, such as an import block whose lines belong to different changes:
 
 ```bash
-uvx git-curate slice --lines src/auth.py
+uvx git-curate slice --hunk-per-line src/auth.py
 ```
 
 An edited line keeps its removed and added sides together, and a blank line joins the line before it. Adjacent lines conflict if reordered, so their final commits must follow the order of the lines in the file.

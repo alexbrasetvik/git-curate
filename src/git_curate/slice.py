@@ -69,7 +69,7 @@ Usage
     uvx git-curate slice --no-split-on-blank-lines src/auth.py
 
     # One temp commit per changed line, e.g. for an import block:
-    uvx git-curate slice --lines src/auth.py
+    uvx git-curate slice --hunk-per-line src/auth.py
 
     # Rewrite history from an earlier commit (inclusive):
     uvx git-curate slice --from abc1234
@@ -592,7 +592,7 @@ def _split_at(header: str, body: list[str], cuts: list[int]) -> list[list[str]]:
 
 
 def _parse_file_block(
-    file_block: str, min_context: int, by_line: bool = False, split_on_blank_lines: bool = True
+    file_block: str, min_context: int, hunk_per_line: bool = False, split_on_blank_lines: bool = True
 ) -> list[Hunk]:
     """Turn one file's diff into hunks that apply in order, each on top of the previous ones."""
     lines = split_lines(file_block)
@@ -627,7 +627,7 @@ def _parse_file_block(
             # A deleted file must be emptied by its last hunk, so its hunks stay whole.
             if file_diff.is_deleted:
                 pieces = [sub_hunk]
-            elif by_line:
+            elif hunk_per_line:
                 pieces = _split_at_lines(sub_hunk)
             elif split_on_blank_lines:
                 pieces = _split_at_blank_lines(sub_hunk)
@@ -662,12 +662,12 @@ def _parse_file_block(
 
 
 def parse_all_hunks(
-    diff_text: str, min_context: int = SPLIT_CONTEXT, by_line: bool = False, split_on_blank_lines: bool = True
+    diff_text: str, min_context: int = SPLIT_CONTEXT, hunk_per_line: bool = False, split_on_blank_lines: bool = True
 ) -> list[Hunk]:
     """Parse a unified diff into one hunk per temp commit.
 
     Hunks are split like `git add -p` 's', then at blank lines between
-    sibling blocks (unless *split_on_blank_lines* is False), or with *by_line* at
+    sibling blocks (unless *split_on_blank_lines* is False), or with *hunk_per_line* at
     every changed line. Each hunk's old-side offset
     accounts for the earlier hunks in its file, so applying the hunks in
     order, each on top of the previous ones, reproduces the diff.
@@ -680,7 +680,7 @@ def parse_all_hunks(
     # Each file's block runs from its "diff --git" line to the next one.
     for file_index, start in enumerate(file_starts):
         end = file_starts[file_index + 1] if file_index + 1 < len(file_starts) else len(diff_text)
-        hunks.extend(_parse_file_block(diff_text[start:end], min_context, by_line, split_on_blank_lines))
+        hunks.extend(_parse_file_block(diff_text[start:end], min_context, hunk_per_line, split_on_blank_lines))
     return hunks
 
 
@@ -1054,9 +1054,9 @@ def _commit_hunks(hunks: list[Hunk], messages: list[str], head_sha: str) -> str:
 
 
 def slice_hunks(
-    paths: list[str], min_context: int = SPLIT_CONTEXT, by_line: bool = False, split_on_blank_lines: bool = True
+    paths: list[str], min_context: int = SPLIT_CONTEXT, hunk_per_line: bool = False, split_on_blank_lines: bool = True
 ) -> int:
-    """Decompose the staged diff into one commit per hunk, or with *by_line* per changed line.
+    """Decompose the staged diff into one commit per hunk, or with *hunk_per_line* per changed line.
 
     HEAD moves once, after all temp commits exist and match the index, so HEAD
     and the real index are untouched if slicing fails.
@@ -1068,7 +1068,7 @@ def slice_hunks(
     except sh.ErrorReturnCode:
         return 0
 
-    hunks = parse_all_hunks(diff_text, min_context, by_line, split_on_blank_lines)
+    hunks = parse_all_hunks(diff_text, min_context, hunk_per_line, split_on_blank_lines)
     if not hunks:
         return 0
 
@@ -1207,10 +1207,10 @@ def slice_command(
             ),
         ),
     ] = SPLIT_CONTEXT,
-    by_line: Annotated[
+    hunk_per_line: Annotated[
         bool,
         typer.Option(
-            "--lines",
+            "--hunk-per-line",
             help=(
                 "Give every changed line its own temp commit; an edited line keeps"
                 " its removed and added sides together. For small diffs, such as"
@@ -1257,7 +1257,9 @@ def slice_command(
         return
 
     print("Slicing hunks into atomic commits...\n")
-    n = slice_hunks(paths, min_context=split_context, by_line=by_line, split_on_blank_lines=split_on_blank_lines)
+    n = slice_hunks(
+        paths, min_context=split_context, hunk_per_line=hunk_per_line, split_on_blank_lines=split_on_blank_lines
+    )
 
     if n == 0:
         print("Nothing to slice — staged diff is empty.")

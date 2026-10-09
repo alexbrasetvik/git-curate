@@ -8,8 +8,10 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
 from git_curate import slice as slice_mod
+from git_curate.cli import app
 from git_curate.common import RebaseInProgressError, SliceError, git
 from git_curate.slice import (
     _dry_run_remaining,
@@ -596,10 +598,10 @@ class TestSplitAtLines:
         assert _split_at_lines(hunk) == [hunk]
 
 
-class TestParseAllHunksByLine:
+class TestParseAllHunksHunkPerLine:
     def test_new_file(self) -> None:
         diff = "diff --git a/n b/n\nnew file mode 100644\n--- /dev/null\n+++ b/n\n@@ -0,0 +1,3 @@\n+one\n+two\n+three\n"
-        hunks = parse_all_hunks(diff, by_line=True)
+        hunks = parse_all_hunks(diff, hunk_per_line=True)
 
         assert len(hunks) == 3
         assert _replay([], [h.lines for h in hunks]) == ["one\n", "two\n", "three\n"]
@@ -608,7 +610,7 @@ class TestParseAllHunksByLine:
         old = [f"l{i}\n" for i in range(12)]
         body = [" l0\n", "+a\n", "+b\n", *(f" l{i}\n" for i in range(1, 11)), "+c\n", "+d\n", " l11\n"]
         diff = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,12 +1,16 @@\n" + "".join(body)
-        hunks = parse_all_hunks(diff, by_line=True)
+        hunks = parse_all_hunks(diff, hunk_per_line=True)
 
         assert len(hunks) == 4
         new = ["l0\n", "a\n", "b\n", *(f"l{i}\n" for i in range(1, 11)), "c\n", "d\n", "l11\n"]
@@ -616,7 +618,7 @@ class TestParseAllHunksByLine:
 
     def test_deleted_file_stays_whole(self) -> None:
         diff = "diff --git a/n b/n\ndeleted file mode 100644\n--- a/n\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-one\n-two\n"
-        assert len(parse_all_hunks(diff, by_line=True)) == 1
+        assert len(parse_all_hunks(diff, hunk_per_line=True)) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -990,6 +992,16 @@ class TestSliceCommand:
         )
 
         assert str(git("rev-list", "--count", f"{base}..HEAD", _cwd=git_repo)).strip() == "1"
+
+    def test_hunk_per_line_commits_each_line(self, git_repo: Path) -> None:
+        (git_repo / "n.py").write_text("a = 1\nb = 2\nc = 3\n")
+        git.add("n.py", _cwd=git_repo)
+        base = str(git("rev-parse", "HEAD", _cwd=git_repo)).strip()
+
+        result = CliRunner().invoke(app, ["slice", "--hunk-per-line"])
+
+        assert result.exit_code == 0, result.output
+        assert str(git("rev-list", "--count", f"{base}..HEAD", _cwd=git_repo)).strip() == "3"
 
     def test_next_step_names_the_commands(self, git_repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
         (git_repo / "n.py").write_text("x = 1\n")

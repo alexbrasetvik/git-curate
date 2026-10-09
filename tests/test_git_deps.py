@@ -258,7 +258,7 @@ class TestByLineDependencies:
 
         f.write_text("import os\nimport re\nimport sys\n\n\ndef main():\n    pass\n")
         git.add("--", "mod.py", _cwd=git_repo)
-        slice_hunks([], by_line=True)
+        slice_hunks([], hunk_per_line=True)
         commits = list_commits(base)
 
         # Adjacent pieces conflict if reordered, so they are chained.

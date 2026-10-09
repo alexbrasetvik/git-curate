@@ -177,3 +177,21 @@ Invoke `/git-curate` in your agent session after making changes.
 It works with Claude Code and pi.
 
 The skill has access to the git-curate tools and `git log`. The git status and diff commands it needs are baked into `git-curate` to simplify permission handling.
+
+### Stacked PRs
+
+A second skill, [skills/git-curate-stack/SKILL.md](skills/git-curate-stack/SKILL.md), turns a branch of tidy commits into GitHub [stacked PRs](https://github.com/github/gh-stack). Invoke `/git-curate-stack` once the commits are logical, for example after `/git-curate`.
+
+The agent proposes one or more stacks, each based on trunk, and splits each stack into layers, one branch per layer. It interviews you until you accept, then creates the branches and registers each stack with `gh stack init`. It does not push or open PRs; it offers `gh stack submit --auto` as the next step.
+
+Commits are never edited, only distributed across branches and reordered, and only where a reorder applies without conflicts. The skill needs the gh-stack extension:
+
+```bash
+gh extension install github/gh-stack
+```
+
+It drives these commands, which also work on their own:
+
+- `git-curate stack analyze` lists the commits since trunk, with the earlier commits each one can't be replayed without, and the independent groups they form.
+- `git-curate stack check` builds a JSON spec of stacks and their layers in the object database, reports the first conflict, and verifies that the stacks together reproduce HEAD.
+- `git-curate stack apply` creates a branch for each layer, all or none. It never moves HEAD or touches the working tree.

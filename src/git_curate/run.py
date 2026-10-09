@@ -20,6 +20,7 @@ from .common import (
     resolve_rewrite_from,
 )
 from .harness import get_harness, resolve_harness_name, resolve_model
+from .provenance import SquashSource
 from .slice import SPLIT_CONTEXT, slice_commits, slice_hunks
 
 # ── Low-level git helpers ────────────────────────────────────────────────────
@@ -205,14 +206,15 @@ def _run_rewrite(
     hunk_per_line: bool,
     split_on_blank_lines: bool,
     split_new_files: bool,
-) -> int:
+) -> tuple[int, SquashSource | None]:
     """Replace an existing commit range with temp commits, or squash it into the staging area.
 
     By default each commit in the range is sliced on its own, so HEAD ends on
     temp commits with the same tree. With *squash_first*, `git reset --soft
     <parent>` makes the whole range staged changes instead. Either way, the
     caller slices any staged changes afterwards. Returns the number of temp
-    commits created.
+    commits created, and with *squash_first* the squashed range, for the
+    caller's slice to credit each hunk to the commits it came from.
 
     Exits with an error if there is already an active git-curate session,
     because resetting HEAD would destroy the temp commits we need to recover.
@@ -232,17 +234,19 @@ def _run_rewrite(
         raise typer.Exit(0)
 
     if squash_first:
+        squash_source = SquashSource.before_reset(parent_sha)
         git("reset", "--soft", parent_sha)
         print(f"Reset to {parent_sha[:SHA_DISPLAY_LEN]}.\n")
-        return 0
+        return 0, squash_source
 
-    return slice_commits(
+    n = slice_commits(
         parent_sha,
         min_context=split_context,
         hunk_per_line=hunk_per_line,
         split_on_blank_lines=split_on_blank_lines,
         split_new_files=split_new_files,
     )
+    return n, None
 
 
 # ── Slice helper ─────────────────────────────────────────────────────────────
@@ -255,13 +259,15 @@ def _slice_changes(
     split_on_blank_lines: bool,
     split_new_files: bool,
     allow_empty: bool = False,
+    squash_source: SquashSource | None = None,
 ) -> None:
     """Turn staged changes into one temp commit per hunk.
 
     With --all, first stage everything in the working tree so that untracked
     and modified-but-unstaged files are included. The splitting arguments are
     slice's splitting options. *allow_empty* accepts having nothing to slice,
-    for when a rewrite already made temp commits.
+    for when a rewrite already made temp commits. *squash_source* is the
+    range a --squash-first rewrite put in the index.
     """
     if all_changes:
         git("add", "-A")
@@ -271,6 +277,7 @@ def _slice_changes(
         hunk_per_line=hunk_per_line,
         split_on_blank_lines=split_on_blank_lines,
         split_new_files=split_new_files,
+        squash_source=squash_source,
     )
     if n == 0 and not allow_empty:
         print(
@@ -386,8 +393,9 @@ def curate(
     # range becomes staged changes. We then clear existing_base to force the
     # slice step below, which picks up any staged changes.
     rewritten = 0
+    squash_source = None
     if rewrite_from is not None or rewrite_branch is not None:
-        rewritten = _run_rewrite(
+        rewritten, squash_source = _run_rewrite(
             rewrite_from,
             rewrite_branch,
             existing_base,
@@ -412,6 +420,7 @@ def curate(
             split_on_blank_lines,
             split_new_files,
             allow_empty=rewritten > 0,
+            squash_source=squash_source,
         )
 
     # Resolve the base SHA now that slicing (if any) has completed.

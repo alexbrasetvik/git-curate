@@ -98,6 +98,7 @@ import sh
 import typer
 
 from .common import SHA_DISPLAY_LEN, Exit, SliceError, SubApp, curate_git, git, resolve_rewrite_from
+from .provenance import SquashSource, source_trailers
 
 app = SubApp()
 
@@ -1093,8 +1094,13 @@ def slice_hunks(
     hunk_per_line: bool = False,
     split_on_blank_lines: bool = True,
     split_new_files: bool = False,
+    squash_source: SquashSource | None = None,
 ) -> int:
     """Decompose the staged diff into one commit per hunk, or with *hunk_per_line* per changed line.
+
+    With *squash_source*, the staged diff is a squashed range of commits, and
+    each temp commit names the commits its lines came from in Curate-Source
+    trailers.
 
     HEAD moves once, after all temp commits exist and match the index, so HEAD
     and the real index are untouched if slicing fails.
@@ -1111,7 +1117,11 @@ def slice_hunks(
         return 0
 
     # Build every commit first; slicing fails here without touching HEAD.
-    messages = [temp_commit_message(hunk, n) for n, hunk in enumerate(hunks, start=1)]
+    titles = [temp_commit_message(hunk, n) for n, hunk in enumerate(hunks, start=1)]
+    messages = titles
+    if squash_source is not None:
+        trailers = source_trailers(hunks, squash_source)
+        messages = [f"{title}\n\n" + "\n".join(t) if t else title for title, t in zip(titles, trailers, strict=True)]
     head_sha = str(git("rev-parse", "HEAD")).strip()
     try:
         tip = _commit_hunks(hunks, messages, head_sha, _ls_index(), "the index")
@@ -1120,8 +1130,8 @@ def slice_hunks(
         raise
 
     # Every commit exists and matches the index: list them, then move HEAD.
-    for n, msg in enumerate(messages, start=1):
-        print(f"  [{n}] {msg}")
+    for n, title in enumerate(titles, start=1):
+        print(f"  [{n}] {title}")
     # The old-value check refuses to move HEAD if it changed while slicing.
     git("update-ref", "-m", "git-curate: slice", "HEAD", tip, head_sha)
     return len(hunks)
@@ -1212,15 +1222,18 @@ def _dry_run_remaining(diff_text: str) -> str:
     return "\n".join(lines_out)
 
 
-def _apply_from_squash(from_commit: str) -> None:
+def _apply_from_squash(from_commit: str) -> SquashSource:
     """Squash commits from from_commit..HEAD back into the staging area.
 
     Uses git reset --soft so all those commits become staged changes again,
-    ready to be re-sliced at the hunk level.
+    ready to be re-sliced at the hunk level. Returns the squashed range, for
+    crediting each hunk to the commits it came from.
     """
     parent_sha = resolve_rewrite_from(from_commit)
+    squash_source = SquashSource.before_reset(parent_sha)
     git("reset", "--soft", parent_sha)
     print(f"Reset HEAD to {parent_sha[:SHA_DISPLAY_LEN]} (squashed {from_commit!r}..HEAD into staging)\n")
+    return squash_source
 
 
 def _ensure_staged_or_stage_all(paths: list[str], all_changes: bool) -> None:
@@ -1366,12 +1379,13 @@ def slice_command(
     """Slice staged changes into one atomic commit per diff hunk."""
     paths = paths or []
     n = 0
+    squash_source: SquashSource | None = None
 
     # --from: slice existing commits, or squash them back into staging first.
     # Skipped during dry-run because either would be permanent.
     if from_commit is not None and not dry_run:
         if squash_first:
-            _apply_from_squash(from_commit)
+            squash_source = _apply_from_squash(from_commit)
         else:
             # Leaving some paths out would drop their changes from the rewritten commits.
             if paths:
@@ -1404,6 +1418,7 @@ def slice_command(
         hunk_per_line=hunk_per_line,
         split_on_blank_lines=split_on_blank_lines,
         split_new_files=split_new_files,
+        squash_source=squash_source,
     )
     _print_slice_done(n)
 

@@ -72,8 +72,11 @@ Usage
     # One temp commit per changed line, e.g. for an import block:
     uvx git-curate slice --hunk-per-line src/auth.py
 
-    # Rewrite history from an earlier commit (inclusive):
+    # Rewrite history from an earlier commit (inclusive), slicing each commit:
     uvx git-curate slice --from abc1234
+
+    # Same, but squash the commits and slice the combined diff:
+    uvx git-curate slice --from abc1234 --squash-first
 
     # Slice again after making more changes (iterative workflow):
     uvx git-curate slice
@@ -1307,6 +1310,17 @@ SplitNewFilesOption = Annotated[
         help=("Also split new files at blank lines. Off by default: a new file's blocks usually land in one commit."),
     ),
 ]
+SquashFirstOption = Annotated[
+    bool,
+    typer.Option(
+        "--squash-first",
+        help=(
+            "When rewriting, squash the commits into the index and slice the result,"
+            " instead of slicing each commit's own diff. Fewer temp commits, but a line"
+            " that several commits changed shows only its final change."
+        ),
+    ),
+]
 
 
 @app.callback()
@@ -1340,21 +1354,40 @@ def slice_command(
         typer.Option(
             "--from",
             help=(
-                "Squash commits from this SHA (inclusive) back into the staged area "
-                "and re-slice them together with any currently staged changes. "
+                "Re-slice commits from this SHA (inclusive), one commit at a time, "
+                "then slice any currently staged changes on top. "
                 "Useful when you want to rewrite existing commits at the hunk level."
             ),
         ),
     ] = None,
+    squash_first: SquashFirstOption = False,
 ) -> None:
     """Slice staged changes into one atomic commit per diff hunk."""
     paths = paths or []
+    n = 0
 
-    # --from: squash existing commits back into staging before slicing.
-    # Skipped during dry-run because the reset would be permanent even if we
-    # never create any commits.
+    # --from: slice existing commits, or squash them back into staging first.
+    # Skipped during dry-run because either would be permanent.
     if from_commit is not None and not dry_run:
-        _apply_from_squash(from_commit)
+        if squash_first:
+            _apply_from_squash(from_commit)
+        else:
+            # Leaving some paths out would drop their changes from the rewritten commits.
+            if paths:
+                print("error: --from with paths needs --squash-first", file=sys.stderr)
+                raise Exit()
+            print("Slicing each commit into atomic commits...\n")
+            n = slice_commits(
+                resolve_rewrite_from(from_commit),
+                min_context=split_context,
+                hunk_per_line=hunk_per_line,
+                split_on_blank_lines=split_on_blank_lines,
+                split_new_files=split_new_files,
+            )
+            # Staged changes are sliced on top, but there may be none.
+            if not all_changes and not str(git.diff("--cached", "--stat")).strip():
+                _print_slice_done(n)
+                return
 
     # Guard: ensure there is actually something staged (or stage it with --all).
     _ensure_staged_or_stage_all(paths, all_changes)
@@ -1364,7 +1397,7 @@ def slice_command(
         return
 
     print("Slicing hunks into atomic commits...\n")
-    n = slice_hunks(
+    n += slice_hunks(
         paths,
         min_context=split_context,
         hunk_per_line=hunk_per_line,

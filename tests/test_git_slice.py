@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 
 from git_curate import slice as slice_mod
 from git_curate.cli import app
-from git_curate.common import RebaseInProgressError, SliceError, git
+from git_curate.common import Exit, RebaseInProgressError, SliceError, git
 from git_curate.slice import (
     _dry_run_remaining,
     _is_diff_context,
@@ -1296,3 +1296,42 @@ class TestSliceCommits:
         assert _tree("HEAD") == _tree(head)
 
 
+class TestSliceFrom:
+    def _slice_from(self, first: str, **kwargs: object) -> None:
+        slice_command(paths=[], dry_run=False, all_changes=False, from_commit=first, **kwargs)  # type: ignore[arg-type]
+
+    def test_slices_each_commit(self, same_line_commits: tuple[str, str]) -> None:
+        first, head = same_line_commits
+
+        self._slice_from(first)
+
+        assert len(str(git.log("--format=%H", f"{first}^..HEAD")).split()) == 3
+        assert _tree("HEAD") == _tree(head)
+
+    def test_squash_first_slices_the_combined_diff(self, same_line_commits: tuple[str, str]) -> None:
+        first, head = same_line_commits
+
+        self._slice_from(first, squash_first=True)
+
+        # A new file is one hunk, so the two later changes to it disappear into it.
+        assert len(str(git.log("--format=%H", f"{first}^..HEAD")).split()) == 1
+        assert _tree("HEAD") == _tree(head)
+
+    def test_slices_staged_changes_on_top(self, git_repo: Path, same_line_commits: tuple[str, str]) -> None:
+        first, _ = same_line_commits
+        (git_repo / "f.py").write_text("a = 1\nb = 3\nc = 9\n")
+        git.add("f.py")
+
+        self._slice_from(first)
+
+        assert len(str(git.log("--format=%H", f"{first}^..HEAD")).split()) == 4
+        assert str(git.diff("--cached")).strip() == ""
+        assert "Curate-Source" not in str(git.log("-1", "--format=%b"))
+
+    def test_paths_need_squash_first(self, same_line_commits: tuple[str, str]) -> None:
+        first, head = same_line_commits
+
+        with pytest.raises(Exit):
+            slice_command(paths=["f.py"], dry_run=False, all_changes=False, from_commit=first)
+
+        assert str(git("rev-parse", "HEAD")).strip() == head

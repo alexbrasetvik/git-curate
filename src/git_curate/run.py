@@ -19,7 +19,7 @@ from .common import (
     resolve_rewrite_from,
 )
 from .harness import get_harness, resolve_harness_name, resolve_model
-from .slice import slice_hunks
+from .slice import SPLIT_CONTEXT, slice_hunks
 
 # ── Low-level git helpers ────────────────────────────────────────────────────
 
@@ -236,15 +236,18 @@ def _run_rewrite(
 # ── Slice helper ─────────────────────────────────────────────────────────────
 
 
-def _slice_changes(all_changes: bool) -> None:
+def _slice_changes(all_changes: bool, split_context: int, hunk_per_line: bool, split_on_blank_lines: bool) -> None:
     """Turn staged changes into one temp commit per hunk.
 
     With --all, first stage everything in the working tree so that untracked
-    and modified-but-unstaged files are included.
+    and modified-but-unstaged files are included. The other arguments are
+    slice's splitting options.
     """
     if all_changes:
         git("add", "-A")
-    n = slice_hunks(paths=[])
+    n = slice_hunks(
+        paths=[], min_context=split_context, hunk_per_line=hunk_per_line, split_on_blank_lines=split_on_blank_lines
+    )
     if n == 0:
         print(
             "Nothing to slice. Stage changes with `git add` first, or pass --all.",
@@ -337,6 +340,9 @@ def curate(
     resume: bool = False,
     restart: bool = False,
     model: str | None = None,
+    split_context: int = SPLIT_CONTEXT,
+    hunk_per_line: bool = False,
+    split_on_blank_lines: bool = True,
 ) -> None:
     existing_base = resolve_base()
 
@@ -361,7 +367,7 @@ def curate(
     # Skipped when continuing an existing session (existing_base is not None),
     # because the temp commits from the previous run are still intact.
     if existing_base is None:
-        _slice_changes(all_changes)
+        _slice_changes(all_changes, split_context, hunk_per_line, split_on_blank_lines)
 
     # Resolve the base SHA now that slicing (if any) has completed.
     base_sha = resolve_base()

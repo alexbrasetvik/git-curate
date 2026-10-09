@@ -53,6 +53,8 @@ Run `uvx git-curate` or `git curate` with no options to run the full workflow:
 
 Pick the harness with `--harness claude` or `--harness pi`, and its model with `--model`, e.g. `git curate --model=opus`. To set defaults, use `git config git-curate.harness` and `git config git-curate.model`. Without a model set, the harness uses its own default.
 
+`git curate` also takes slice's splitting options, `--split-context`, `--hunk-per-line` and `--no-split-on-blank-lines`; see `git curate slice --help`.
+
 ### Slicing
 
 `slice` creates one commit per hunk, for `group` to later squash.

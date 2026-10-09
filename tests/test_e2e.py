@@ -165,3 +165,22 @@ def test_failed_attempt_kept_without_prompt_under_yes(staged_repo: Path, monkeyp
     monkeypatch.setattr("typer.prompt", _no_prompt)
     assert run._handle_failed_attempt(base_sha, yes=True) is False
     assert load_failed_attempt(base_sha) is not None
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        ([], 2),
+        (["--no-split-on-blank-lines"], 1),
+        (["--hunk-per-line"], 4),
+    ],
+)
+def test_bare_command_passes_slice_options(git_repo: Path, args: list[str], expected: int) -> None:
+    (git_repo / "n.py").write_text("def f():\n    pass\n\ndef g():\n    pass\n")
+    git.add("n.py")
+    base = str(git("rev-parse", "HEAD")).strip()
+
+    result = runner.invoke(app, ["--dry-run", *args])
+
+    assert result.exit_code == 0, result.output
+    assert len(list_commits(base)) == expected

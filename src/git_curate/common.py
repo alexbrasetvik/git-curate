@@ -77,7 +77,7 @@ class EnvOverlay(Mapping[str, str]):
 # the C locale keeps the ones we surface and match on in English.
 GIT_ENV = EnvOverlay({"LC_ALL": "C"})
 
-git = sh.git.bake(
+git = sh.git.bake(  # type: ignore[call-overload]  # sh types _env as dict; EnvOverlay is a Mapping
     # We care about diff quality over speed:
     "-c",
     "diff.algorithm=patience",

@@ -182,6 +182,10 @@ def build_rebase_plan(
             )
         msg_to_sha[commit.message] = commit.sha
 
+    # A group's commits apply in their original order, whatever order the spec
+    # lists them in, so two that change the same line can't be swapped.
+    position = {commit.sha: n for n, commit in enumerate(commits)}
+
     # claimed_shas prevents one commit from appearing in two groups.
     claimed_shas: set[str] = set()
     todo_lines: list[str | AmendEntry] = []
@@ -195,6 +199,7 @@ def build_rebase_plan(
         group_shas = _resolve_group_shas(group, msg_to_sha, claimed_shas, errors)
         if not group_shas:
             continue
+        group_shas.sort(key=position.__getitem__)
 
         # First commit in the group: pick it, then amend its message.
         # --reset-author (applied later) restores the real user identity;

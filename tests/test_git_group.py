@@ -122,6 +122,12 @@ class TestBuildRebasePlan:
         assert plan[3] == "pick sha0001"
         assert plan[4] == AmendEntry("feat: b")
 
+    def test_group_commits_keep_their_original_order(self) -> None:
+        commits = self._commits("temp: a.py:L1", "temp: b.py:L1", "temp: a.py:L1 again")
+        groups = [Group(message="feat: a", commits=["temp: a.py:L1 again", "temp: b.py:L1", "temp: a.py:L1"])]
+        plan = build_rebase_plan(commits, groups)
+        assert plan == ["pick sha0000", AmendEntry("feat: a"), "fixup sha0001", "fixup sha0002"]
+
     def test_duplicate_commit_message_uses_last_sha(self) -> None:
         commits = [Commit(sha="sha_old", message="dup"), Commit(sha="sha_new", message="dup")]
         groups = [Group(message="feat: x", commits=["dup"])]

@@ -166,18 +166,33 @@ class TestOrderingConstraintEnforcement:
         commits = list_commits(base)
         return base, commits
 
-    def test_reversed_order_rejected(self, git_repo: Path, tmp_path: Path) -> None:
+    def test_reversed_group_order_rejected(self, git_repo: Path, tmp_path: Path) -> None:
         base, commits = self._setup_overlapping_session(git_repo)
         assert len(commits) == 2
 
-        # Spec deliberately reverses the order: later commit first.
-        spec = [{"message": "feat: combined", "commits": [commits[1].message, commits[0].message]}]
+        # Spec deliberately reverses the order: the later commit's group first.
+        spec = [
+            {"message": "feat: second", "commits": [commits[1].message]},
+            {"message": "feat: first", "commits": [commits[0].message]},
+        ]
         spec_path = tmp_path / "spec.json"
         spec_path.write_text(json.dumps(spec))
 
         result = self._runner.invoke(app, ["group", "--spec", str(spec_path), base])
         assert result.exit_code != 0
         assert "must precede" in result.output
+
+    def test_reversed_order_within_group_accepted(self, git_repo: Path, tmp_path: Path) -> None:
+        base, commits = self._setup_overlapping_session(git_repo)
+        assert len(commits) == 2
+
+        # group applies a group's commits in their original order, whatever the spec order.
+        spec = [{"message": "feat: combined", "commits": [commits[1].message, commits[0].message]}]
+        spec_path = tmp_path / "spec.json"
+        spec_path.write_text(json.dumps(spec))
+
+        result = self._runner.invoke(app, ["group", "--spec", str(spec_path), base])
+        assert result.exit_code == 0, result.output
 
     def test_correct_order_accepted(self, git_repo: Path, tmp_path: Path) -> None:
         base, commits = self._setup_overlapping_session(git_repo)

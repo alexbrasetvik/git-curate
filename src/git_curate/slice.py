@@ -1036,28 +1036,34 @@ def _run_fast_import(stream: Iterator[bytes]) -> None:
         raise errors[0]
 
 
-def _verify(tip: str, hunks: list[Hunk]) -> None:
-    """Check that every path the hunks touched has the same mode and blob in tip as in the real index.
+def _verify(tip: str, hunks: list[Hunk], expected: dict[str, tuple[str, str]], expected_name: str) -> None:
+    """Check that every path the hunks touched has the same mode and blob in tip as in *expected*.
 
     All of a file's hunks get committed, so its final content must be exactly
-    what is staged. Deleted and renamed-away paths must be absent from both.
+    what was diffed. Deleted and renamed-away paths must be absent from both.
     """
     touched = {path for hunk in hunks for path in (hunk.file.old_path, hunk.file.new_path) if path}
 
     tree = _ls_tree(tip)
-    index = _ls_index()
     for path in sorted(touched):
         # A path absent from both compares None to None, and passes.
-        if tree.get(path) != index.get(path):
-            raise SliceError(f"{path}: result differs from the index")
+        if tree.get(path) != expected.get(path):
+            raise SliceError(f"{path}: result differs from {expected_name}")
 
 
-def _commit_hunks(hunks: list[Hunk], messages: list[str], head_sha: str) -> str:
+def _commit_hunks(
+    hunks: list[Hunk],
+    messages: list[str],
+    head_sha: str,
+    expected: dict[str, tuple[str, str]],
+    expected_name: str,
+) -> str:
     """Create one temp commit per hunk on top of head_sha. Returns the new tip; HEAD is not moved.
 
     Hunks are applied to file contents in Python, and all commits are streamed
     through a single `git fast-import`. Before returning, every touched path in
-    the tip is checked against the real index.
+    the tip is checked against *expected*: the real index, or the tree of the
+    commit being sliced.
     """
     check_supported(hunks)
     preimages = _load_preimages(hunks, head_sha)
@@ -1074,7 +1080,7 @@ def _commit_hunks(hunks: list[Hunk], messages: list[str], head_sha: str) -> str:
         with contextlib.suppress(sh.ErrorReturnCode):
             git("update-ref", "-d", ref)
 
-    _verify(tip, hunks)
+    _verify(tip, hunks, expected, expected_name)
     return tip
 
 
@@ -1105,7 +1111,7 @@ def slice_hunks(
     messages = [temp_commit_message(hunk, n) for n, hunk in enumerate(hunks, start=1)]
     head_sha = str(git("rev-parse", "HEAD")).strip()
     try:
-        tip = _commit_hunks(hunks, messages, head_sha)
+        tip = _commit_hunks(hunks, messages, head_sha, _ls_index(), "the index")
     except SliceError as e:
         print(f"error: cannot slice: {e.reason}", file=sys.stderr)
         raise

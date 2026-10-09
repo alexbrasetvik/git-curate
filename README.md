@@ -93,6 +93,12 @@ To preview without committing:
 uvx git-curate slice --dry-run
 ```
 
+To rewrite existing commits, from `abc1234` (inclusive) to HEAD:
+
+```bash
+uvx git-curate slice --from abc1234
+```
+
 ### Grouping
 
 After slicing, write the diff to disk for the agent:

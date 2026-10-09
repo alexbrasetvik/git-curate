@@ -1173,6 +1173,40 @@ def _print_dry_run_hunks(paths: list[str]) -> None:
 # CLI
 # ---------------------------------------------------------------------------
 
+# Splitting options, shared with the bare `git-curate` command.
+SplitContextOption = Annotated[
+    int,
+    typer.Option(
+        "--split-context",
+        help=(
+            "Minimum run of context lines between two change regions required"
+            " to split a hunk. The default of 1 matches git add -p 's'; raise it"
+            " for fewer temp commits, or set 0 to disable splitting."
+        ),
+    ),
+]
+HunkPerLineOption = Annotated[
+    bool,
+    typer.Option(
+        "--hunk-per-line",
+        help=(
+            "Give every changed line its own temp commit; an edited line keeps"
+            " its removed and added sides together. For small diffs, such as"
+            " import blocks, where adjacent lines belong in different commits."
+        ),
+    ),
+]
+SplitOnBlankLinesOption = Annotated[
+    bool,
+    typer.Option(
+        "--split-on-blank-lines/--no-split-on-blank-lines",
+        help=(
+            "Split runs of added or removed lines at blank lines between sibling"
+            " blocks. Turn off to keep new code together and get fewer temp commits."
+        ),
+    ),
+]
+
 
 @app.callback()
 def slice_command(
@@ -1196,38 +1230,9 @@ def slice_command(
             help="Stage all unstaged changes to tracked files (or the given paths) before slicing",
         ),
     ] = False,
-    split_context: Annotated[
-        int,
-        typer.Option(
-            "--split-context",
-            help=(
-                "Minimum run of context lines between two change regions required"
-                " to split a hunk. The default of 1 matches git add -p 's'; raise it"
-                " for fewer temp commits, or set 0 to disable splitting."
-            ),
-        ),
-    ] = SPLIT_CONTEXT,
-    hunk_per_line: Annotated[
-        bool,
-        typer.Option(
-            "--hunk-per-line",
-            help=(
-                "Give every changed line its own temp commit; an edited line keeps"
-                " its removed and added sides together. For small diffs, such as"
-                " import blocks, where adjacent lines belong in different commits."
-            ),
-        ),
-    ] = False,
-    split_on_blank_lines: Annotated[
-        bool,
-        typer.Option(
-            "--split-on-blank-lines/--no-split-on-blank-lines",
-            help=(
-                "Split runs of added or removed lines at blank lines between sibling"
-                " blocks. Turn off to keep new code together and get fewer temp commits."
-            ),
-        ),
-    ] = True,
+    split_context: SplitContextOption = SPLIT_CONTEXT,
+    hunk_per_line: HunkPerLineOption = False,
+    split_on_blank_lines: SplitOnBlankLinesOption = True,
     from_commit: Annotated[
         str | None,
         typer.Option(

@@ -249,6 +249,21 @@ class TestCheck:
         assert out["ok"] is True
         assert [b["name"] for b in out["stacks"][0]["layers"]] == ["a/add", "a/tweak"]
 
+    def test_merges_only_commits_between_stacks(
+        self, mixed_branch: dict[str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # git 2.43's merge-tree rejects trees, and three stacks merge an earlier merge's result.
+        real = stack_mod.merge_trees
+
+        def commits_only(base: str, ours: str, theirs: str) -> str | Conflict:
+            assert {str(git("cat-file", "-t", rev)).strip() for rev in (base, ours, theirs)} == {"commit"}
+            return real(base, ours, theirs)
+
+        monkeypatch.setattr(stack_mod, "merge_trees", commits_only)
+        spec = _write_spec(tmp_path / "spec.json", _three_stacks(mixed_branch))
+        code, out = _run("check", "--spec", spec)
+        assert code == 0, out
+
     def test_single_stack_in_new_order(self, mixed_branch: dict[str, str], tmp_path: Path) -> None:
         c = mixed_branch
         order = [c["fix"], c["a1"], c["a2"], c["b1"], c["b2"]]

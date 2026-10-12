@@ -18,6 +18,7 @@ from __future__ import annotations
 import sh
 
 from .common import SHA_DISPLAY_LEN, SubApp, count_commits_since, git, resolve_base
+from .slice import staged_paths
 
 app = SubApp()
 
@@ -43,10 +44,13 @@ def status_command() -> None:
     base_subject = str(git.log("-1", "--format=%s", base)).strip()
     base_line = f"Base:    {base[:SHA_DISPLAY_LEN]} — {base_subject}"
 
-    staged = str(git.diff("--cached", "--name-only")).strip()
-    staged_count = len(staged.splitlines()) if staged else 0
+    staged = staged_paths([])
+    staged_count = len(staged)
     file_suffix = "s" if staged_count != 1 else ""
-    staged_hint = " — ready to slice" if staged_count > 0 and not has_session else ""
+    staged_hint = ""
+    if staged_count > 0:
+        # Mid-session, staged files are usually ones slice couldn't slice.
+        staged_hint = " — not in any temp commit; `group` leaves them unstaged" if has_session else " — ready to slice"
     staged_line = f"Staged:  {staged_count} file{file_suffix}{staged_hint}"
 
     unstaged = str(git.diff("--name-only")).strip()
@@ -60,4 +64,7 @@ def status_command() -> None:
     print(session_line)
     print(base_line)
     print(staged_line)
+    if has_session:
+        for path in staged:
+            print(f"  {path}")
     print(unstaged_line)

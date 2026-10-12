@@ -794,6 +794,28 @@ class TestSliceHunks:
         log = str(git.log("--oneline"))
         assert "temp: code.py:" in log
 
+    def test_skipped_binary_file_is_reported(self, git_repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        (git_repo / "code.py").write_text("x = 1\n")
+        (git_repo / "data.bin").write_bytes(bytes(range(256)))
+        git.add(".", _cwd=git_repo)
+
+        assert slice_hunks([]) == 1
+        err = capsys.readouterr().err
+        assert "warning: not sliced" in err
+        assert "  data.bin\n" in err
+        assert "code.py" not in err
+
+        result = CliRunner().invoke(app, ["status"])
+        assert "Staged:  1 file — not in any temp commit" in result.output
+        assert "  data.bin\n" in result.output
+
+    def test_nothing_but_a_binary_file_is_reported(self, git_repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        (git_repo / "data.bin").write_bytes(bytes(range(256)))
+        git.add(".", _cwd=git_repo)
+
+        assert slice_hunks([]) == 0
+        assert "  data.bin\n" in capsys.readouterr().err
+
     def test_path_filter_limits_slicing(self, git_repo: Path, commit_test_file: Callable[[str, str], None]) -> None:
         commit_test_file("a.py", "a = 1\n")
         commit_test_file("b.py", "b = 1\n")

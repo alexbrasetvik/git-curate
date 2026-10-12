@@ -510,3 +510,21 @@ def test_works_in_linked_worktree(git_repo: Path, tmp_path: Path) -> None:
     code, _ = _run("apply", "--spec", spec)
     assert code == 0
     assert str(git("rev-parse", "a", _cwd=str(git_repo))).strip() == sha
+
+
+def test_default_spec_path_is_in_the_worktree_git_dir(git_repo: Path, tmp_path: Path) -> None:
+    wt = tmp_path / "wt"
+    git("worktree", "add", "-q", str(wt), "-b", "feat")
+    os.chdir(wt)
+    (wt / "a").write_text("a\n")
+    git.add(".")
+    git.commit("--no-verify", "-m", "Add a")
+    sha = str(git("rev-parse", "HEAD")).strip()
+
+    spec = Path(str(git("rev-parse", "--absolute-git-dir")).strip()) / "git-curate-stack-spec.json"
+    _write_spec(spec, [[("a", [sha])]])
+    code, out = _run("check")
+    assert code == 0, out
+    code, out = _run("apply")
+    assert code == 0, out
+    assert out["created"] == ["a"]

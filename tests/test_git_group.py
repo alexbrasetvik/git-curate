@@ -308,6 +308,20 @@ class TestExecuteRebase:
         assert str(git("rev-parse", "HEAD")).strip() == tip
         assert not os.path.exists(str(git("rev-parse", "--git-path", "git-curate-group")).strip())
 
+    def test_failing_hooks_do_not_stop_the_rebase(self, git_repo: Path) -> None:
+        base = self._setup_temp_commits(git_repo, n=2)
+        hooks = Path(str(git("rev-parse", "--git-path", "hooks")).strip())
+        hooks.mkdir(exist_ok=True)
+        for name in ("pre-commit", "commit-msg", "pre-rebase"):
+            (hooks / name).write_text("#!/bin/sh\necho hook-ran >&2\nexit 1\n")
+            (hooks / name).chmod(0o755)
+
+        commits = list_commits(base)
+        groups = [Group(message="feat: combined", commits=[c.message for c in commits])]
+        execute_rebase(base, build_rebase_plan(commits, groups))
+
+        assert str(git.log("--format=%s", f"{base}..HEAD")).strip() == "feat: combined"
+
     def test_ungrouped_commits_preserved(self, git_repo: Path) -> None:
         base = self._setup_temp_commits(git_repo, n=2)
         commits = list_commits(base)
@@ -385,21 +399,21 @@ class TestFailedAttempt:
     _runner = CliRunner()
 
     def _setup(self, git_repo: Path, tmp_path: Path) -> tuple[str, Path]:
-        base = TestGroupCommandSpecFile()._setup_temp_commits(git_repo)
+        """Two temp commits that change the same line, and a spec that swaps them, so the rebase conflicts."""
+        base = str(git("rev-parse", "HEAD")).strip()
+        for n, content in enumerate(["one\n", "two\n"]):
+            (git_repo / "f.py").write_text(content)
+            git.add(".")
+            git.commit("--no-verify", "-m", f"temp: f.py {n}")
         spec_file = tmp_path / "groups.json"
-        TestGroupCommandSpecFile()._write_spec(spec_file, base)
+        self._write_spec(spec_file, ["temp: f.py 1", "temp: f.py 0"])
         return base, spec_file
 
-    def _fail_commit_msg_hook(self, git_repo: Path) -> Path:
-        # The amend steps run hooks, so a failing commit-msg hook stops the rebase.
-        hook = git_repo / ".git" / "hooks" / "commit-msg"
-        hook.write_text("#!/bin/sh\necho hook-says-no\nexit 1\n")
-        hook.chmod(0o755)
-        return hook
+    def _write_spec(self, path: Path, order: list[str]) -> None:
+        path.write_text(json.dumps([{"message": f"feat: {m}", "commits": [m]} for m in order]))
 
     def test_failed_group_saves_spec_and_output(self, git_repo: Path, tmp_path: Path) -> None:
         base, spec_file = self._setup(git_repo, tmp_path)
-        self._fail_commit_msg_hook(git_repo)
 
         result = self._runner.invoke(app, ["group", base, "--spec", str(spec_file)])
 
@@ -408,15 +422,14 @@ class TestFailedAttempt:
         attempt = load_failed_attempt(base)
         assert attempt is not None
         assert attempt.spec_text == spec_file.read_text()
-        assert "hook-says-no" in attempt.output
+        assert "CONFLICT" in attempt.output
 
     def test_successful_group_clears_saved_attempt(self, git_repo: Path, tmp_path: Path) -> None:
         base, spec_file = self._setup(git_repo, tmp_path)
-        hook = self._fail_commit_msg_hook(git_repo)
         self._runner.invoke(app, ["group", base, "--spec", str(spec_file)])
         assert load_failed_attempt(base) is not None
 
-        hook.unlink()
+        self._write_spec(spec_file, ["temp: f.py 0", "temp: f.py 1"])
         result = self._runner.invoke(app, ["group", base, "--spec", str(spec_file)])
 
         assert result.exit_code == 0, result.output

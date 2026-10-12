@@ -113,13 +113,13 @@ class TestAddCoauthorTrailers:
 class TestAmendCommand:
     def test_resets_author_without_one(self) -> None:
         assert _amend_command(AmendEntry("m"), "/tmp/m 1.txt") == (
-            "exec git commit --amend -F '/tmp/m 1.txt' --reset-author"
+            "exec git commit --amend --no-verify -F '/tmp/m 1.txt' --reset-author"
         )
 
     def test_sets_author_and_date(self) -> None:
         entry = AmendEntry("m", author=Ident("O'Brien", "ob@example.com"), date="2026-01-02T03:04:05+01:00")
         assert _amend_command(entry, "/tmp/m.txt") == (
-            "exec git commit --amend -F /tmp/m.txt"
+            "exec git commit --amend --no-verify -F /tmp/m.txt"
             " '--author=O'\"'\"'Brien <ob@example.com>' --date=2026-01-02T03:04:05+01:00"
         )
 

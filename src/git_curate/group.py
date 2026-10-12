@@ -38,7 +38,7 @@ Algorithm:
 2. List all commits between base and HEAD, keyed by message.
 3. For each group in the spec, resolve message → current SHA.
 4. Build a rebase plan: the first commit in each group gets "pick"
-   followed by an "exec git commit --amend -F <file> --reset-author"
+   followed by an "exec git commit --amend --no-verify -F <file> --reset-author"
    to set the final message and restore the real author; the rest get
    "fixup". Ungrouped commits get plain "pick".
    When the temp commits were sliced from existing commits, the amend uses
@@ -47,7 +47,7 @@ Algorithm:
    Each commit message goes into a file under the git dir so newlines and special
    characters don't break the plan.
 5. Set GIT_SEQUENCE_EDITOR to a script that replaces the rebase todo
-   with this plan, then execute `git rebase -i --autostash <base>`
+   with this plan, then execute `git rebase -i --autostash --no-verify <base>`
    non-interactively.
 6. If the rebase stops, abort it (HEAD returns to the temp commits) and save
    the spec under the git dir so the grouping work can be revised, not redone.
@@ -272,7 +272,9 @@ def attribute_authors(plan: list[str | AmendEntry]) -> None:
 
 def _amend_command(entry: AmendEntry, msg_path: str) -> str:
     """Return the exec line that gives the picked commit *entry*'s message and author."""
-    cmd = ["git", "commit", "--amend", "-F", msg_path]
+    # Hooks already ran, or were skipped, when the changes were committed; a
+    # failing one here would stop the rebase over a spec that is fine.
+    cmd = ["git", "commit", "--amend", "--no-verify", "-F", msg_path]
     if entry.author is None:
         # Restore the real user identity on temp commits that carry the
         # Git Curate <git-curate@local> author.
@@ -358,6 +360,7 @@ def execute_rebase(
         result = git.rebase(
             "-i",
             "--autostash",
+            "--no-verify",  # skip the pre-rebase hook, for the same reason as the amends
             base,
             _env=env,
             _err_to_out=True,

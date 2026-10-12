@@ -96,6 +96,12 @@ class TestAddCoauthorTrailers:
     def test_appends_after_a_blank_line(self, git_repo: Path) -> None:
         assert add_coauthor_trailers("Add a\n", [BOB]) == f"Add a\n\nCo-authored-by: {BOB}\n"
 
+    def test_message_without_final_newline(self, git_repo: Path) -> None:
+        message = add_coauthor_trailers("Add a", [BOB])
+        assert message == f"Add a\n\nCo-authored-by: {BOB}\n"
+        out = str(git("interpret-trailers", "--parse", _in=message))
+        assert out == f"Co-authored-by: {BOB}\n"
+
     def test_skips_a_coauthor_the_message_names(self, git_repo: Path) -> None:
         message = "Add a\n\nCo-authored-by: Robert <BOB@example.com>\n"
         assert add_coauthor_trailers(message, [BOB]) == message

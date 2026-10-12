@@ -189,7 +189,9 @@ def add_coauthor_trailers(message: str, coauthors: list[str]) -> str:
     if not new:
         return message
     args = [a for c in new for a in ("--trailer", f"Co-authored-by: {c}")]
-    return str(git("interpret-trailers", *args, _in=message))
+    # Without a final newline, older git (2.43) appends the trailer right under
+    # the subject, with no blank line, where it isn't parsed as a trailer.
+    return str(git("interpret-trailers", *args, _in=message.rstrip("\n") + "\n"))
 
 
 def _trailers(message: str) -> list[tuple[str, str]]:

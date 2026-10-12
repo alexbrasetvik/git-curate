@@ -19,7 +19,7 @@ description = "Lint and format with ruff"
 
 [tasks.typecheck]
 depends = ["lint"]
-run = "uv run mypy src/ tests/"
+run = "uv run mypy src/ tests/ .mise/tasks/"
 description = "Type check with mypy"
 
 # Quality checks that don't trivially allow arbitrary code execution, like tests do:

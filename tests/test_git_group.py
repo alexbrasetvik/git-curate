@@ -376,6 +376,28 @@ class TestGroupCommandSpecFile:
         assert f"git-curate log {base[:SHA_DISPLAY_LEN]}" in result.output
 
 
+class TestSpecShape:
+    @pytest.mark.parametrize(
+        ("spec", "message"),
+        [
+            ('{"groups": []}', "spec must be a JSON list"),
+            ('["feat: a"]', "group 1: needs a 'message' string"),
+            ('[{"message": "feat: a", "commits": []}, {"message": "feat: b"}]', "group 2: needs"),
+            ('[{"message": "feat: a", "commits": "temp: a"}]', "group 1: needs"),
+            ('[{"message": "feat: a", "commits": [1]}]', "group 1: needs"),
+            ("[{", "Invalid JSON in spec"),
+        ],
+    )
+    def test_malformed_spec_is_reported(self, git_repo: Path, spec: str, message: str) -> None:
+        base = TestGroupCommandSpecFile()._setup_temp_commits(git_repo)
+
+        result = CliRunner().invoke(app, ["group", base], input=spec)
+
+        assert result.exit_code == 1
+        assert not isinstance(result.exception, TypeError | KeyError | AttributeError)
+        assert message in result.output
+
+
 # ---------------------------------------------------------------------------
 # Failed group attempts
 # ---------------------------------------------------------------------------

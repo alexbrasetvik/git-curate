@@ -1,4 +1,4 @@
-"""Tests for the environment git runs with."""
+"""Tests for common.py: the environment git runs with, and finding the session base."""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 import sh
 
-from git_curate.common import CURATE_AUTHOR_EMAIL, curate_git, git
+from git_curate import common
+from git_curate.common import CURATE_AUTHOR_EMAIL, curate_git, find_slice_base, git
 
 
 def _printenv(cmd: sh.Command, name: str) -> str:
@@ -31,3 +32,39 @@ def test_curate_git_runs_in_c_locale_with_curate_author(git_repo: Path, monkeypa
 def test_env_changes_after_import_reach_git(git_repo: Path, monkeypatch: pytest.MonkeyPatch, cmd: sh.Command) -> None:
     monkeypatch.setenv("GIT_CURATE_TEST_VAR", "set-late")
     assert _printenv(cmd, "GIT_CURATE_TEST_VAR") == "set-late"
+
+
+class TestFindSliceBase:
+    def _curate_commits(self, n: int) -> None:
+        for i in range(n):
+            curate_git.commit("--no-verify", "--allow-empty", "-m", f"temp: {i}")
+
+    def test_base_on_a_later_page(self, git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(common, "SLICE_BASE_PAGE", 2)
+        base = str(git("rev-parse", "HEAD")).strip()
+        self._curate_commits(5)
+        assert find_slice_base() == base
+
+    def test_all_curate_falls_back_to_root(self, git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(common, "SLICE_BASE_PAGE", 2)
+        git.checkout("-q", "--orphan", "all-curate")
+        self._curate_commits(4)
+        assert find_slice_base() == str(git("rev-list", "--max-parents=0", "HEAD")).strip()
+
+    def test_reads_only_the_first_page(self, git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        for i in range(5):
+            git.commit("--no-verify", "--allow-empty", "-m", f"history {i}")
+        base = str(git("rev-parse", "HEAD")).strip()
+        self._curate_commits(1)
+        monkeypatch.setattr(common, "SLICE_BASE_PAGE", 2)
+        calls: list[tuple[str, ...]] = []
+        real_log = git.log
+
+        class Spy:
+            def log(self, *args: str) -> str:
+                calls.append(args)
+                return str(real_log(*args))
+
+        monkeypatch.setattr(common, "git", Spy())
+        assert find_slice_base() == base
+        assert calls == [("-n2", "--skip=0", "--format=%H %ae", "HEAD")]

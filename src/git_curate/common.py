@@ -128,6 +128,11 @@ curate_git = git.bake(
 )
 
 
+# Commits find_slice_base reads per git log call. A session is rarely longer,
+# so one call usually suffices however long the history is.
+SLICE_BASE_PAGE = 256
+
+
 def find_slice_base() -> str:
     """Walk HEAD backward and return the SHA of the first non-curate commit.
 
@@ -136,11 +141,18 @@ def find_slice_base() -> str:
 
     Falls back to the root commit when every commit is curate-authored.
     """
-    # %H = full SHA, %ae = author email; one "sha email" line per commit, newest first
-    for line in str(git.log("--format=%H %ae", "HEAD")).strip().splitlines():
-        sha, email = line.split(" ", 1)
-        if email.strip() != CURATE_AUTHOR_EMAIL:
-            return sha
+    skip = 0
+    while True:
+        # %H = full SHA, %ae = author email; one "sha email" line per commit, newest first
+        out = str(git.log(f"-n{SLICE_BASE_PAGE}", f"--skip={skip}", "--format=%H %ae", "HEAD")).strip()
+        lines = out.splitlines() if out else []
+        for line in lines:
+            sha, email = line.split(" ", 1)
+            if email.strip() != CURATE_AUTHOR_EMAIL:
+                return sha
+        if len(lines) < SLICE_BASE_PAGE:
+            break
+        skip += SLICE_BASE_PAGE
     # --max-parents=0 selects the root commit (no parents); fallback when every commit is ours
     return str(git("rev-list", "--max-parents=0", "HEAD")).strip()
 

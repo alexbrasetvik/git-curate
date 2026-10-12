@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import os
+import re
 import shutil
 import sys
 from collections.abc import Callable, Iterator, Mapping
@@ -331,6 +332,10 @@ class NotInGitRepoError(Exit):
     pass
 
 
+class GitTooOldError(Exit):
+    pass
+
+
 class RebaseInProgressError(Exit):
     pass
 
@@ -394,6 +399,30 @@ def ensure_in_git_repo() -> None:
     except sh.ErrorReturnCode as e:
         print("fatal: not inside a git repository", file=sys.stderr)
         raise NotInGitRepoError() from e
+
+
+# The oldest git CI tests, as Ubuntu 24.04 ships it. Older git lacks
+# merge-tree options stack relies on (--merge-base, --stdin).
+MIN_GIT_VERSION = (2, 43)
+
+
+def parse_git_version(output: str) -> tuple[int, int] | None:
+    """Return (major, minor) from `git --version` output, or None if it doesn't parse."""
+    # Vendors append to the version: "2.50.1 (Apple Git-155)", "2.43.0.windows.1".
+    m = re.match(r"git version (\d+)\.(\d+)", output)
+    return (int(m[1]), int(m[2])) if m else None
+
+
+def check_git_version() -> None:
+    """Raise GitTooOldError if git is older than MIN_GIT_VERSION."""
+    output = str(git("--version")).strip()
+    found = parse_git_version(output)
+    # A version we can't parse is likely a fork or a build from source; let it run.
+    if found is None or found >= MIN_GIT_VERSION:
+        return
+    required = ".".join(map(str, MIN_GIT_VERSION))
+    print(f"fatal: git-curate needs git {required} or newer, found: {output}", file=sys.stderr)
+    raise GitTooOldError()
 
 
 def pre_checks() -> None:

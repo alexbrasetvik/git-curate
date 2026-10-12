@@ -6,6 +6,7 @@ import typer
 from typer.core import TyperGroup
 
 from .abort import app as abort_app
+from .common import check_git_version
 from .diff import app as diff_app
 from .group import app as group_app
 from .log import app as log_app
@@ -131,6 +132,9 @@ def default(
     squash_first: SquashFirstOption = False,
 ) -> None:
     """Slice staged changes and invoke the AI harness to group them into logical commits."""
+    # Runs before any subcommand too; --version and --help exit before this.
+    check_git_version()
+
     if ctx.invoked_subcommand is not None:
         return
 

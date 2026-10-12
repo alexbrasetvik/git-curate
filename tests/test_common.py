@@ -68,3 +68,46 @@ class TestFindSliceBase:
         monkeypatch.setattr(common, "git", Spy())
         assert find_slice_base() == base
         assert calls == [("-n2", "--skip=0", "--format=%H %ae", "HEAD")]
+
+
+class TestGitVersion:
+    @pytest.mark.parametrize(
+        ("output", "expected"),
+        [
+            ("git version 2.43.0", (2, 43)),
+            ("git version 2.50.1 (Apple Git-155)", (2, 50)),
+            ("git version 2.43.0.windows.1", (2, 43)),
+            ("git version 3.0.0-rc1", (3, 0)),
+            ("not git", None),
+        ],
+    )
+    def test_parse(self, output: str, expected: tuple[int, int] | None) -> None:
+        assert common.parse_git_version(output) == expected
+
+    def _fake_git_version(self, monkeypatch: pytest.MonkeyPatch, output: str) -> None:
+        monkeypatch.setattr(common, "git", lambda *args: f"{output}\n")
+
+    @pytest.mark.parametrize("output", ["git version 2.43.0", "git version 2.100.0", "git version 3.0.0", "custom"])
+    def test_accepts_new_enough_or_unparseable(self, monkeypatch: pytest.MonkeyPatch, output: str) -> None:
+        self._fake_git_version(monkeypatch, output)
+        common.check_git_version()
+
+    def test_rejects_older_than_2_43(self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+        self._fake_git_version(monkeypatch, "git version 2.42.2")
+        with pytest.raises(common.GitTooOldError):
+            common.check_git_version()
+        assert capsys.readouterr().err == "fatal: git-curate needs git 2.43 or newer, found: git version 2.42.2\n"
+
+    def test_cli_rejects_older_git_before_subcommand(self, git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from typer.testing import CliRunner
+
+        from git_curate.cli import app
+
+        self._fake_git_version(monkeypatch, "git version 2.39.5")
+        result = CliRunner().invoke(app, ["status"])
+
+        assert result.exit_code == 1
+        assert "needs git 2.43 or newer" in result.output
+
+    def test_real_git_passes(self) -> None:
+        common.check_git_version()

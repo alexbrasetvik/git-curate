@@ -81,7 +81,7 @@ import shutil
 import sys
 import textwrap
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, Any
 
 import sh
 import typer
@@ -422,14 +422,35 @@ def _read_spec(spec: str) -> str:
         return f.read()
 
 
+def _shape_errors(data: Any) -> list[str]:
+    if not isinstance(data, list):
+        return ['spec must be a JSON list of {"message": ..., "commits": [...]} groups']
+    errors = []
+    for n, group in enumerate(data, 1):
+        if (
+            not isinstance(group, dict)
+            or not isinstance(group.get("message"), str)
+            or not isinstance(group.get("commits"), list)
+            or not all(isinstance(c, str) for c in group["commits"])
+        ):
+            errors.append(f"group {n}: needs a 'message' string and a list of 'commits' strings")
+    return errors
+
+
 def _parse_spec_json(spec_text: str) -> list[Group]:
     """Parse the JSON grouping spec, exiting with a readable error on failure."""
     try:
-        data: list[dict] = json.loads(spec_text)
-        return [Group(message=g["message"], commits=g["commits"]) for g in data]
+        data = json.loads(spec_text)
     except json.JSONDecodeError as e:
         print(f"Invalid JSON in spec: {e}", file=sys.stderr)
         raise InvalidSpecError() from e
+    errors = _shape_errors(data)
+    if errors:
+        print("Errors in grouping spec:\n", file=sys.stderr)
+        for error in errors:
+            print(f"  - {error}", file=sys.stderr)
+        raise InvalidSpecError()
+    return [Group(message=g["message"], commits=g["commits"]) for g in data]
 
 
 def _print_rebase_plan(commits: list[Commit], groups: list[Group], todo_lines: list[str | AmendEntry]) -> None:

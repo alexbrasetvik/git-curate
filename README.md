@@ -26,6 +26,8 @@ Run `git-curate` alone to execute all three steps, using Claude or pi as the mod
 
 ## Installation
 
+git-curate needs git 2.43 or newer, the oldest version CI tests.
+
 Install with [uv](https://docs.astral.sh/uv/):
 
 ```bash

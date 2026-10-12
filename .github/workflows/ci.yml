@@ -46,3 +46,24 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: uv sync --all-groups
       - run: uv run pytest -n 0
+
+  test-distro-git:
+    name: Tests (pytest, Ubuntu 24.04's git)
+    runs-on: ubuntu-latest
+    # The runner image installs git from the git-core PPA; the container has
+    # the distro's own git, the oldest version git-curate supports.
+    container: ubuntu:24.04
+    steps:
+      - name: Install git
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates
+          git --version
+          # The checkout is owned by another user than the container's root.
+          git config --global --add safe.directory '*'
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+      - run: uv sync --all-groups
+      - run: uv run pytest -n 0

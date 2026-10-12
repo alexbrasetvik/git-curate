@@ -89,3 +89,24 @@ def test_failing_cli_exits_without_thread_traceback(
         harness_cls()._run("base", str(tmp_path), str(tmp_path), str(tmp_path / "spec.json"))
     assert exc_info.value.code == 1
     assert thread_errors == []
+
+
+def test_failing_claude_runs_once_and_shows_its_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runs = tmp_path / "runs"
+    fake = tmp_path / "bin" / "claude"
+    fake.parent.mkdir()
+    fake.write_text(f"#!/bin/sh\necho run >> '{runs}'\necho 'not json: session crashed'\nexit 3\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake.parent}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr("git_curate.harness.claude.build_prompt", lambda base_sha, spec_path: "prompt")
+
+    with pytest.raises(Exit) as exc_info:
+        ClaudeHarness()._run("base", str(tmp_path), str(tmp_path), str(tmp_path / "spec.json"))
+
+    assert exc_info.value.code == 3
+    assert runs.read_text() == "run\n"
+    err = capsys.readouterr().err
+    assert "claude exited with code 3" in err
+    assert "session crashed" in err

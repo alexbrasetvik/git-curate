@@ -4,7 +4,7 @@ Stacks — split a tidy branch into GitHub stacked-PR branches
 
 Backs the git-curate-stack skill. The branch's commits are never edited, only
 reordered or redistributed into one or more stacks, each based on trunk. Everything happens in the object database with
-``git merge-tree`` and ``git commit-tree``: HEAD, the current branch and the
+``git merge-tree`` and ``git hash-object``: HEAD, the current branch and the
 working tree are never touched, and ``apply`` only creates new branch refs.
 
 All output is JSON on stdout, for the agent.
@@ -73,6 +73,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import tempfile
 from dataclasses import dataclass, field
@@ -82,9 +83,7 @@ import sh
 import typer
 
 from .common import (
-    GIT_ENV,
     SHA_DISPLAY_LEN,
-    EnvOverlay,
     Exit,
     git,
     list_commits,
@@ -194,6 +193,23 @@ def _files(sha: str) -> list[str]:
     return out.splitlines() if out else []
 
 
+# "Name <email> 1700000000 +0100", the value of a raw commit's author or committer header.
+_IDENT_HEADER = re.compile(rb"^(.*) <(.*)> (\d+ [+-]\d{4})$")
+
+
+def _read_commit(sha: str) -> tuple[dict[bytes, bytes], bytes]:
+    """Return the raw commit object's headers, first of each, and its message, as bytes."""
+    raw: bytes = git("cat-file", "commit", sha, _return_cmd=True).stdout
+    header, _, message = raw.partition(b"\n\n")
+    headers: dict[bytes, bytes] = {}
+    for line in header.split(b"\n"):
+        if line.startswith(b" "):
+            continue  # the continuation of a multi-line header, such as gpgsig
+        key, _, value = line.partition(b" ")
+        headers.setdefault(key, value)
+    return headers, message
+
+
 def replay(sha: str, onto: str) -> str | Conflict:
     """Return a commit like *sha* but on top of commit *onto*, or the conflict that prevents it.
 
@@ -207,23 +223,23 @@ def replay(sha: str, onto: str) -> str | Conflict:
     if isinstance(tree, Conflict):
         return tree
 
-    fields = str(git.log("-1", "--format=%an%x00%ae%x00%ad%x00%cd", "--date=raw", sha)).rstrip("\n").split("\0")
-    name, email, author_date, committer_date = fields
-    # The raw object keeps the message byte for byte, which %B doesn't.
-    raw = str(git("cat-file", "commit", sha))
-    message = raw.split("\n\n", 1)[1] if "\n\n" in raw else ""
-    commit_git = git.bake(
-        _env=EnvOverlay(
-            {
-                **GIT_ENV.overrides,
-                "GIT_AUTHOR_NAME": name,
-                "GIT_AUTHOR_EMAIL": email,
-                "GIT_AUTHOR_DATE": author_date,
-                "GIT_COMMITTER_DATE": committer_date,
-            }
-        )
-    )
-    return str(commit_git("commit-tree", tree, "-p", onto, "-F", "-", _in=message)).strip()
+    # The new object copies the author, any encoding header and the message
+    # byte for byte. commit-tree can't: it re-encodes text that isn't valid
+    # UTF-8 and has no encoding header, as if it were Latin-1.
+    headers, message = _read_commit(sha)
+    committer = _IDENT_HEADER.match(headers[b"committer"])
+    me = _IDENT_HEADER.match(git("var", "GIT_COMMITTER_IDENT", _return_cmd=True).stdout.strip())
+    assert committer is not None and me is not None, f"{sha}: unparsable committer"
+    lines = [
+        b"tree " + tree.encode(),
+        b"parent " + onto.encode(),
+        b"author " + headers[b"author"],
+        b"committer %s <%s> %s" % (me[1], me[2], committer[3]),
+    ]
+    if b"encoding" in headers:
+        lines.append(b"encoding " + headers[b"encoding"])
+    obj = b"\n".join(lines) + b"\n\n" + message
+    return str(git("hash-object", "-w", "-t", "commit", "--stdin", _in=obj)).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -481,7 +497,7 @@ def resolve_spec(spec: StackSpec, base: str) -> list[str]:
 
 
 def _subject(sha: str) -> str:
-    return str(git.log("-1", "--format=%s", sha)).strip()
+    return str(git.log("-1", "--format=%s", sha, _decode_errors="replace")).strip()
 
 
 def _blocked_by(sha: str, placed: set[str], paths: list[str], base: str) -> list[str]:

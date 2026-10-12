@@ -247,7 +247,9 @@ class Commit:
 
 def list_commits(base: str) -> list[Commit]:
     """Return commits from base..HEAD, oldest first."""
-    log = str(git.log("--reverse", "--format=%H %s", f"{base}..HEAD")).strip()
+    # A subject without an encoding header can be any bytes; it's only shown or
+    # matched against temp commits' messages, which are UTF-8.
+    log = str(git.log("--reverse", "--format=%H %s", f"{base}..HEAD", _decode_errors="replace")).strip()
     if not log:
         return []
     commits = []

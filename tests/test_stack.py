@@ -387,6 +387,35 @@ class TestApply:
         )
         assert str(git.log("-1", "--format=%B", "a", "--")) == str(git.log("-1", "--format=%B", a, "--"))
 
+    @pytest.mark.parametrize("encoding", [b"encoding ISO-8859-1\n", b""], ids=["latin-1", "invalid-utf-8"])
+    def test_preserves_non_utf8_bytes(self, feature: Path, commit: CommitFn, tmp_path: Path, encoding: bytes) -> None:
+        a = commit("Add a", a="a\n")
+        b = commit("Add b", b="b\n")
+        # Give b a Latin-1 author and message, with or without an encoding header.
+        raw: bytes = git("cat-file", "commit", b, _return_cmd=True).stdout
+        header, _, _ = raw.partition(b"\n\n")
+        lines = [
+            b"author Andr\xe9 <andre@example.com> 981169566 +0100" if line.startswith(b"author ") else line
+            for line in header.split(b"\n")
+        ]
+        raw = b"\n".join(lines) + b"\n" + encoding + b"\nCaf\xe9 au lait\n\nNa\xefve body.\n"
+        b = str(git("hash-object", "-w", "-t", "commit", "--stdin", _in=raw)).strip()
+        git("update-ref", "refs/heads/feat", b)
+
+        spec = _write_spec(tmp_path / "spec.json", [[("b", [b])], [("a", [a])]])
+        code, out = _run("apply", "--spec", spec)
+        assert code == 0, out
+
+        def without_tree_parent_committer(sha: str) -> bytes:
+            raw: bytes = git("cat-file", "commit", sha, _return_cmd=True).stdout
+            kept = (b"author ", b"encoding ")
+            header, _, message = raw.partition(b"\n\n")
+            return b"\n".join(line for line in header.split(b"\n") if line.startswith(kept)) + b"\n\n" + message
+
+        replayed = str(git("rev-parse", "refs/heads/b")).strip()
+        assert replayed != b
+        assert without_tree_parent_committer(replayed) == without_tree_parent_committer(b)
+
     def test_unchanged_prefix_keeps_shas(self, mixed_branch: dict[str, str], tmp_path: Path) -> None:
         c = mixed_branch
         spec = _write_spec(

@@ -1114,6 +1114,7 @@ def slice_hunks(
 
     hunks = parse_all_hunks(diff_text, min_context, hunk_per_line, split_on_blank_lines, split_new_files)
     if not hunks:
+        _warn_unsliced(paths)
         return 0
 
     # Build every commit first; slicing fails here without touching HEAD.
@@ -1134,7 +1135,28 @@ def slice_hunks(
         print(f"  [{n}] {title}")
     # The old-value check refuses to move HEAD if it changed while slicing.
     git("update-ref", "-m", "git-curate: slice", "HEAD", tip, head_sha)
+    _warn_unsliced(paths)
     return len(hunks)
+
+
+def staged_paths(paths: list[str]) -> list[str]:
+    """Return the staged paths, limited to *paths* if given."""
+    out = str(git.diff("--cached", "--name-only", "-z", "--", *paths))
+    return [path for path in out.split("\0") if path]
+
+
+def _warn_unsliced(paths: list[str]) -> None:
+    """Warn about the staged files slicing left out: those without text hunks, or with quoted paths."""
+    unsliced = staged_paths(paths)
+    if not unsliced:
+        return
+    print(
+        "warning: not sliced, and still staged (binary files, quoted paths, pure renames or mode changes):",
+        file=sys.stderr,
+    )
+    for path in unsliced:
+        print(f"  {path}", file=sys.stderr)
+    print("`git-curate group` leaves them unstaged; commit them yourself.", file=sys.stderr)
 
 
 def slice_commits(

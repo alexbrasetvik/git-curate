@@ -29,7 +29,9 @@ Grouping spec format (JSON file or stdin):
     ]
 
 Messages must match exactly. Commits not mentioned in any group get picked
-unchanged, after all the groups.
+unchanged, just before the first group with a commit from after them, or
+at the end if there is none. So real commits below the temp commits, with an
+explicit base, stay where they are.
 
 Algorithm:
 ----------
@@ -40,7 +42,7 @@ Algorithm:
 4. Build a rebase plan: the first commit in each group gets "pick"
    followed by an "exec git commit --amend --no-verify -F <file> --reset-author"
    to set the final message and restore the real author; the rest get
-   "fixup". Ungrouped commits get plain "pick".
+   "fixup". Ungrouped commits get plain "pick", in place (see above).
    When the temp commits were sliced from existing commits, the amend uses
    --author and --date from those commits instead, and the other authors
    become Co-authored-by trailers (see authors.py).
@@ -197,7 +199,7 @@ def build_rebase_plan(
 
     # claimed_shas prevents one commit from appearing in two groups.
     claimed_shas: set[str] = set()
-    todo_lines: list[str | AmendEntry] = []
+    resolved: list[tuple[Group, list[str]]] = []
     errors: list[str] = []
 
     for group in groups:
@@ -209,6 +211,23 @@ def build_rebase_plan(
         if not group_shas:
             continue
         group_shas.sort(key=position.__getitem__)
+        resolved.append((group, group_shas))
+
+    if errors:
+        print("Errors in grouping spec:\n", file=sys.stderr)
+        for e in errors:
+            print(f"  - {e}", file=sys.stderr)
+        print(file=sys.stderr)
+        raise InvalidSpecError()
+
+    # Commits not claimed by any group keep their place: each is picked just
+    # before the first group with a commit from after it. Real commits below
+    # the temp ones then come first, and the rebase leaves them as they are.
+    ungrouped = [c.sha for c in commits if c.sha not in claimed_shas]
+    todo_lines: list[str | AmendEntry] = []
+    for group, group_shas in resolved:
+        while ungrouped and position[ungrouped[0]] < position[group_shas[-1]]:
+            todo_lines.append(f"pick {ungrouped.pop(0)}")
 
         # First commit in the group: pick it, then amend its message.
         # The amend (applied later) replaces the Git Curate <git-curate@local>
@@ -220,19 +239,7 @@ def build_rebase_plan(
         for sha in group_shas[1:]:
             todo_lines.append(f"fixup {sha}")
 
-    if errors:
-        print("Errors in grouping spec:\n", file=sys.stderr)
-        for e in errors:
-            print(f"  - {e}", file=sys.stderr)
-        print(file=sys.stderr)
-        raise InvalidSpecError()
-
-    # Append any commits not claimed by any group as plain picks, preserving
-    # their original order in the log so we don't reorder history.
-    ungrouped = [c.sha for c in commits if c.sha not in claimed_shas]
-    for sha in ungrouped:
-        todo_lines.append(f"pick {sha}")
-
+    todo_lines += [f"pick {sha}" for sha in ungrouped]
     return todo_lines
 
 

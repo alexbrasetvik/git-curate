@@ -4,7 +4,7 @@ Stacks — split a tidy branch into GitHub stacked-PR branches
 
 Backs the git-curate-stack skill. The branch's commits are never edited, only
 reordered or redistributed into one or more stacks, each based on trunk. Everything happens in the object database with
-``git merge-tree`` and ``git commit-tree``: HEAD, the current branch and the
+``git merge-tree`` and ``git hash-object``: HEAD, the current branch and the
 working tree are never touched, and ``apply`` only creates new branch refs.
 
 All output is JSON on stdout, for the agent.
@@ -41,7 +41,9 @@ Algorithm:
 ----------
 Replaying commit C onto X is a three-way merge with C's parent as the base:
 ``git merge-tree --write-tree --merge-base=C^ X C``. It succeeds exactly when
-cherry-picking C onto X would apply without conflicts.
+cherry-picking C onto X would apply without conflicts. Older git (2.43
+included) merges only commits, not trees, so a merged tree that is merged
+again is first wrapped in a throwaway commit.
 
 ``analyze`` finds, for each commit i, the later commits that can't be
 replayed without it: it rebuilds the chain from i's parent leaving i out, and
@@ -70,7 +72,10 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
+import re
 import shlex
+import tempfile
 from dataclasses import dataclass, field
 from typing import Annotated, Any, NoReturn
 
@@ -78,9 +83,7 @@ import sh
 import typer
 
 from .common import (
-    GIT_ENV,
     SHA_DISPLAY_LEN,
-    EnvOverlay,
     Exit,
     git,
     list_commits,
@@ -114,7 +117,7 @@ class Conflict:
 
 
 def merge_trees(base: str, ours: str, theirs: str) -> str | Conflict:
-    """Three-way merge tree-ishes in the object database; return the tree or the conflicted paths."""
+    """Three-way merge commits in the object database; return the tree or the conflicted paths."""
     result = git(
         "merge-tree",
         "--write-tree",
@@ -158,6 +161,25 @@ def merge_batch(merges: list[tuple[str, str, str]]) -> list[str | Conflict]:
     return results
 
 
+# The identity of commit_trees' commits; fixed, so a tree always gets the same commit.
+_WRAP_IDENT = "git-curate <git-curate@local> 0 +0000"
+
+
+def commit_trees(trees: list[str]) -> list[str]:
+    """Wrap each of *trees* in a parentless commit, for merging it again; in one git process."""
+    if not trees:
+        return []
+    with tempfile.TemporaryDirectory() as d:
+        paths = []
+        for n, tree in enumerate(trees):
+            path = os.path.join(d, str(n))
+            with open(path, "w") as f:
+                f.write(f"tree {tree}\nauthor {_WRAP_IDENT}\ncommitter {_WRAP_IDENT}\n\n")
+            paths.append(path)
+        out = str(git("hash-object", "-w", "-t", "commit", "--stdin-paths", _in="".join(f"{p}\n" for p in paths)))
+    return out.split()
+
+
 def _parent(sha: str) -> str:
     return str(git("rev-parse", f"{sha}^")).strip()
 
@@ -169,6 +191,23 @@ def _tree(rev: str) -> str:
 def _files(sha: str) -> list[str]:
     out = str(git("diff-tree", "--no-commit-id", "--name-only", "-r", sha)).strip()
     return out.splitlines() if out else []
+
+
+# "Name <email> 1700000000 +0100", the value of a raw commit's author or committer header.
+_IDENT_HEADER = re.compile(rb"^(.*) <(.*)> (\d+ [+-]\d{4})$")
+
+
+def _read_commit(sha: str) -> tuple[dict[bytes, bytes], bytes]:
+    """Return the raw commit object's headers, first of each, and its message, as bytes."""
+    raw: bytes = git("cat-file", "commit", sha, _return_cmd=True).stdout
+    header, _, message = raw.partition(b"\n\n")
+    headers: dict[bytes, bytes] = {}
+    for line in header.split(b"\n"):
+        if line.startswith(b" "):
+            continue  # the continuation of a multi-line header, such as gpgsig
+        key, _, value = line.partition(b" ")
+        headers.setdefault(key, value)
+    return headers, message
 
 
 def replay(sha: str, onto: str) -> str | Conflict:
@@ -184,23 +223,23 @@ def replay(sha: str, onto: str) -> str | Conflict:
     if isinstance(tree, Conflict):
         return tree
 
-    fields = str(git.log("-1", "--format=%an%x00%ae%x00%ad%x00%cd", "--date=raw", sha)).rstrip("\n").split("\0")
-    name, email, author_date, committer_date = fields
-    # The raw object keeps the message byte for byte, which %B doesn't.
-    raw = str(git("cat-file", "commit", sha))
-    message = raw.split("\n\n", 1)[1] if "\n\n" in raw else ""
-    commit_git = git.bake(
-        _env=EnvOverlay(
-            {
-                **GIT_ENV.overrides,
-                "GIT_AUTHOR_NAME": name,
-                "GIT_AUTHOR_EMAIL": email,
-                "GIT_AUTHOR_DATE": author_date,
-                "GIT_COMMITTER_DATE": committer_date,
-            }
-        )
-    )
-    return str(commit_git("commit-tree", tree, "-p", onto, "-F", "-", _in=message)).strip()
+    # The new object copies the author, any encoding header and the message
+    # byte for byte. commit-tree can't: it re-encodes text that isn't valid
+    # UTF-8 and has no encoding header, as if it were Latin-1.
+    headers, message = _read_commit(sha)
+    committer = _IDENT_HEADER.match(headers[b"committer"])
+    me = _IDENT_HEADER.match(git("var", "GIT_COMMITTER_IDENT", _return_cmd=True).stdout.strip())
+    assert committer is not None and me is not None, f"{sha}: unparsable committer"
+    lines = [
+        b"tree " + tree.encode(),
+        b"parent " + onto.encode(),
+        b"author " + headers[b"author"],
+        b"committer %s <%s> %s" % (me[1], me[2], committer[3]),
+    ]
+    if b"encoding" in headers:
+        lines.append(b"encoding " + headers[b"encoding"])
+    obj = b"\n".join(lines) + b"\n\n" + message
+    return str(git("hash-object", "-w", "-t", "commit", "--stdin", _in=obj)).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -247,37 +286,43 @@ def compute_requires(base: str) -> list[CommitInfo]:
     """List base..HEAD with, for each commit, the earlier commits it can't be replayed without."""
     commits = list_commits(base)
     infos = [CommitInfo(sha=c.sha, subject=c.message, files=_files(c.sha)) for c in commits]
-    trees = [_tree(c.sha) for c in commits]
-    parent_trees = [_tree(base)] + trees[:-1]
+    shas = [c.sha for c in commits]
+    parents = [base] + shas[:-1]
 
-    # Chain i leaves out commit i. Its tip equals pos[i], an original tree,
-    # except at the paths in dirty[i]: those of i and of every commit it dropped.
-    tips = list(parent_trees)
-    pos = list(trees)
+    # Chain i leaves out commit i. Its tip is a commit whose tree equals
+    # pos[i]'s, an original commit, except at the paths in dirty[i]: those of
+    # i and of every commit it dropped.
+    tips = list(parents)
+    pos = list(shas)
     dirty = [_Paths(info.files) for info in infos]
 
     requires: list[set[int]] = [set() for _ in commits]
     for j in range(1, len(commits)):
         paths = _Paths(infos[j].files)
         chains = [i for i in range(j) if dirty[i].overlaps(paths)]
-        results = merge_batch([(pos[i], tips[i], trees[j]) for i in chains])
+        results = merge_batch([(pos[i], tips[i], shas[j]) for i in chains])
         dropped = []
+        merged: dict[int, str] = {}
         for i, result in zip(chains, results, strict=True):
             if isinstance(result, Conflict):
                 requires[j].add(i)
                 dirty[i].add(paths)
                 dropped.append(i)
             else:
-                tips[i] = result
-                pos[i] = trees[j]
+                merged[i] = result
+                pos[i] = shas[j]
         # A dropped commit still leaves the skipped ones before it to pick up.
-        behind = [i for i in dropped if pos[i] != parent_trees[j]]
-        for i, result in zip(behind, merge_batch([(pos[i], tips[i], parent_trees[j]) for i in behind]), strict=True):
+        behind = [i for i in dropped if pos[i] != parents[j]]
+        for i, result in zip(behind, merge_batch([(pos[i], tips[i], parents[j]) for i in behind]), strict=True):
             if isinstance(result, Conflict):
-                raise AssertionError(f"skipped commits conflict with what {commits[i].sha} left out: {result.paths}")
-            tips[i] = result
+                # Can't happen: the chain matches the original history outside what it left out.
+                reason = f"skipped commits conflict with what {_short(commits[i].sha)} left out: {result.paths}"
+                _fail({"ok": False, "errors": [f"internal error: {reason}"]})
+            merged[i] = result
+        for i, tip in zip(merged, commit_trees(list(merged.values())), strict=True):
+            tips[i] = tip
         for i in dropped:
-            pos[i] = trees[j]
+            pos[i] = shas[j]
 
     # Leaving i out drops everything that conflicts without it, so this is
     # mostly closed already; close it explicitly in case a replay happened to
@@ -454,7 +499,7 @@ def resolve_spec(spec: StackSpec, base: str) -> list[str]:
 
 
 def _subject(sha: str) -> str:
-    return str(git.log("-1", "--format=%s", sha)).strip()
+    return str(git.log("-1", "--format=%s", sha, _decode_errors="replace")).strip()
 
 
 def _blocked_by(sha: str, placed: set[str], paths: list[str], base: str) -> list[str]:
@@ -508,7 +553,7 @@ def build(spec: StackSpec, base: str) -> dict[str, Any]:
             report["ok"] = False
             report["conflict"] = {"between_stacks": True, "paths": merged.paths}
             return report
-        combined = merged
+        [combined] = commit_trees([merged])  # older git merges only commits
     head_tree = _tree("HEAD")
     if _tree(combined) != head_tree:
         report["ok"] = False

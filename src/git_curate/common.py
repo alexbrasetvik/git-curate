@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import os
+import re
 import shutil
 import sys
 from collections.abc import Callable, Iterator, Mapping
@@ -128,6 +129,11 @@ curate_git = git.bake(
 )
 
 
+# Commits find_slice_base reads per git log call. A session is rarely longer,
+# so one call usually suffices however long the history is.
+SLICE_BASE_PAGE = 256
+
+
 def find_slice_base() -> str:
     """Walk HEAD backward and return the SHA of the first non-curate commit.
 
@@ -136,11 +142,18 @@ def find_slice_base() -> str:
 
     Falls back to the root commit when every commit is curate-authored.
     """
-    # %H = full SHA, %ae = author email; one "sha email" line per commit, newest first
-    for line in str(git.log("--format=%H %ae", "HEAD")).strip().splitlines():
-        sha, email = line.split(" ", 1)
-        if email.strip() != CURATE_AUTHOR_EMAIL:
-            return sha
+    skip = 0
+    while True:
+        # %H = full SHA, %ae = author email; one "sha email" line per commit, newest first
+        out = str(git.log(f"-n{SLICE_BASE_PAGE}", f"--skip={skip}", "--format=%H %ae", "HEAD")).strip()
+        lines = out.splitlines() if out else []
+        for line in lines:
+            sha, email = line.split(" ", 1)
+            if email.strip() != CURATE_AUTHOR_EMAIL:
+                return sha
+        if len(lines) < SLICE_BASE_PAGE:
+            break
+        skip += SLICE_BASE_PAGE
     # --max-parents=0 selects the root commit (no parents); fallback when every commit is ours
     return str(git("rev-list", "--max-parents=0", "HEAD")).strip()
 
@@ -234,7 +247,9 @@ class Commit:
 
 def list_commits(base: str) -> list[Commit]:
     """Return commits from base..HEAD, oldest first."""
-    log = str(git.log("--reverse", "--format=%H %s", f"{base}..HEAD")).strip()
+    # A subject without an encoding header can be any bytes; it's only shown or
+    # matched against temp commits' messages, which are UTF-8.
+    log = str(git.log("--reverse", "--format=%H %s", f"{base}..HEAD", _decode_errors="replace")).strip()
     if not log:
         return []
     commits = []
@@ -319,6 +334,10 @@ class NotInGitRepoError(Exit):
     pass
 
 
+class GitTooOldError(Exit):
+    pass
+
+
 class RebaseInProgressError(Exit):
     pass
 
@@ -382,6 +401,30 @@ def ensure_in_git_repo() -> None:
     except sh.ErrorReturnCode as e:
         print("fatal: not inside a git repository", file=sys.stderr)
         raise NotInGitRepoError() from e
+
+
+# The oldest git CI tests, as Ubuntu 24.04 ships it. Older git lacks
+# merge-tree options stack relies on (--merge-base, --stdin).
+MIN_GIT_VERSION = (2, 43)
+
+
+def parse_git_version(output: str) -> tuple[int, int] | None:
+    """Return (major, minor) from `git --version` output, or None if it doesn't parse."""
+    # Vendors append to the version: "2.50.1 (Apple Git-155)", "2.43.0.windows.1".
+    m = re.match(r"git version (\d+)\.(\d+)", output)
+    return (int(m[1]), int(m[2])) if m else None
+
+
+def check_git_version() -> None:
+    """Raise GitTooOldError if git is older than MIN_GIT_VERSION."""
+    output = str(git("--version")).strip()
+    found = parse_git_version(output)
+    # A version we can't parse is likely a fork or a build from source; let it run.
+    if found is None or found >= MIN_GIT_VERSION:
+        return
+    required = ".".join(map(str, MIN_GIT_VERSION))
+    print(f"fatal: git-curate needs git {required} or newer, found: {output}", file=sys.stderr)
+    raise GitTooOldError()
 
 
 def pre_checks() -> None:

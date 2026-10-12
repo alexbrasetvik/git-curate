@@ -13,9 +13,10 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
+import git_curate.stack as stack_mod
 from git_curate.cli import app
 from git_curate.common import git, list_commits
-from git_curate.stack import Conflict, _tree, compute_requires, merge_trees
+from git_curate.stack import Conflict, commit_trees, compute_requires, merge_trees
 
 runner = CliRunner()
 
@@ -126,17 +127,16 @@ def _random_branch(repo: Path, rng: random.Random, commits: int) -> None:
 def _naive_requires(base: str) -> dict[str, list[str]]:
     """The leave-one-out definition, one merge per (commit, later commit) pair."""
     shas = [c.sha for c in list_commits(base)]
-    trees = [_tree(sha) for sha in shas]
-    parent_trees = [_tree(base)] + trees[:-1]
+    parents = [str(git("rev-parse", base)).strip()] + shas[:-1]
     requires: list[set[int]] = [set() for _ in shas]
     for i in range(len(shas)):
-        tip = parent_trees[i]
+        tip = parents[i]
         for j in range(i + 1, len(shas)):
-            result = merge_trees(parent_trees[j], tip, trees[j])
+            result = merge_trees(parents[j], tip, shas[j])
             if isinstance(result, Conflict):
                 requires[j].add(i)
             else:
-                tip = result
+                [tip] = commit_trees([result])
     for j in range(len(shas)):
         for k in sorted(requires[j]):
             requires[j] |= requires[k]
@@ -193,6 +193,45 @@ class TestAnalyze:
         assert out["commits"][2]["requires"] == [_short(a)]
         assert out["commits"][3]["requires"] == [_short(a)]
 
+    def test_merges_only_commits(
+        self, mixed_branch: dict[str, str], commit: CommitFn, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # git 2.43's merge-tree rejects trees: "expected commit type, but the
+        # object dereferences to tree type".
+        commit("Tweak a again", a="A1\nA2\na3\n")
+        real = stack_mod.merge_batch
+        seen: list[str] = []
+
+        def commits_only(merges: list[tuple[str, str, str]]) -> list[str | Conflict]:
+            for merge in merges:
+                seen.extend(merge)
+                assert {str(git("cat-file", "-t", rev)).strip() for rev in merge} == {"commit"}
+            return real(merges)
+
+        monkeypatch.setattr(stack_mod, "merge_batch", commits_only)
+        compute_requires("main")
+        # And some merge took an earlier merge's result.
+        assert not set(seen) <= {c.sha for c in list_commits("main")} | {str(git("rev-parse", "main")).strip()}
+
+    def test_broken_invariant_is_reported_as_json(
+        self, mixed_branch: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Leaving out "Add a" skips "Add b"; when "Tweak a" then conflicts, the
+        # catch-up merge over "Add b" must apply, and here it doesn't.
+        monkeypatch.setattr(stack_mod, "merge_batch", lambda merges: [Conflict(paths=["b"]) for _ in merges])
+        code, out = _run("analyze", "--trunk", "main")
+        assert code == 1
+        assert out["ok"] is False
+        assert out["errors"] == [
+            f"internal error: skipped commits conflict with what {_short(mixed_branch['a1'])} left out: ['b']"
+        ]
+
+    def test_commit_trees_wraps_each_tree(self, git_repo: Path) -> None:
+        tree = str(git("rev-parse", "HEAD^{tree}")).strip()
+        wrapped = commit_trees([tree, tree])
+        assert len(wrapped) == 2
+        assert [str(git("rev-parse", f"{c}^{{tree}}")).strip() for c in wrapped] == [tree, tree]
+
     @pytest.mark.parametrize("seed", range(6))
     def test_matches_replaying_every_chain(self, feature: Path, seed: int) -> None:
         _random_branch(feature, random.Random(seed), commits=14)
@@ -222,6 +261,21 @@ class TestCheck:
         assert code == 0, out
         assert out["ok"] is True
         assert [b["name"] for b in out["stacks"][0]["layers"]] == ["a/add", "a/tweak"]
+
+    def test_merges_only_commits_between_stacks(
+        self, mixed_branch: dict[str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # git 2.43's merge-tree rejects trees, and three stacks merge an earlier merge's result.
+        real = stack_mod.merge_trees
+
+        def commits_only(base: str, ours: str, theirs: str) -> str | Conflict:
+            assert {str(git("cat-file", "-t", rev)).strip() for rev in (base, ours, theirs)} == {"commit"}
+            return real(base, ours, theirs)
+
+        monkeypatch.setattr(stack_mod, "merge_trees", commits_only)
+        spec = _write_spec(tmp_path / "spec.json", _three_stacks(mixed_branch))
+        code, out = _run("check", "--spec", spec)
+        assert code == 0, out
 
     def test_single_stack_in_new_order(self, mixed_branch: dict[str, str], tmp_path: Path) -> None:
         c = mixed_branch
@@ -345,6 +399,35 @@ class TestApply:
             git.log("-1", f"--format={fmt}", "--date=raw", b, "--")
         )
         assert str(git.log("-1", "--format=%B", "a", "--")) == str(git.log("-1", "--format=%B", a, "--"))
+
+    @pytest.mark.parametrize("encoding", [b"encoding ISO-8859-1\n", b""], ids=["latin-1", "invalid-utf-8"])
+    def test_preserves_non_utf8_bytes(self, feature: Path, commit: CommitFn, tmp_path: Path, encoding: bytes) -> None:
+        a = commit("Add a", a="a\n")
+        b = commit("Add b", b="b\n")
+        # Give b a Latin-1 author and message, with or without an encoding header.
+        raw: bytes = git("cat-file", "commit", b, _return_cmd=True).stdout
+        header, _, _ = raw.partition(b"\n\n")
+        lines = [
+            b"author Andr\xe9 <andre@example.com> 981169566 +0100" if line.startswith(b"author ") else line
+            for line in header.split(b"\n")
+        ]
+        raw = b"\n".join(lines) + b"\n" + encoding + b"\nCaf\xe9 au lait\n\nNa\xefve body.\n"
+        b = str(git("hash-object", "-w", "-t", "commit", "--stdin", _in=raw)).strip()
+        git("update-ref", "refs/heads/feat", b)
+
+        spec = _write_spec(tmp_path / "spec.json", [[("b", [b])], [("a", [a])]])
+        code, out = _run("apply", "--spec", spec)
+        assert code == 0, out
+
+        def without_tree_parent_committer(sha: str) -> bytes:
+            raw: bytes = git("cat-file", "commit", sha, _return_cmd=True).stdout
+            kept = (b"author ", b"encoding ")
+            header, _, message = raw.partition(b"\n\n")
+            return b"\n".join(line for line in header.split(b"\n") if line.startswith(kept)) + b"\n\n" + message
+
+        replayed = str(git("rev-parse", "refs/heads/b")).strip()
+        assert replayed != b
+        assert without_tree_parent_committer(replayed) == without_tree_parent_committer(b)
 
     def test_unchanged_prefix_keeps_shas(self, mixed_branch: dict[str, str], tmp_path: Path) -> None:
         c = mixed_branch

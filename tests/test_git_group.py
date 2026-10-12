@@ -81,6 +81,23 @@ class TestBuildRebasePlan:
         plan = build_rebase_plan(commits, groups)
         assert "pick sha0001" in plan
 
+    def test_ungrouped_commits_keep_their_place(self) -> None:
+        commits = self._commits("real", "temp: a.py:L1", "temp: b.py:L1", "temp: c.py:L1", "temp: d.py:L1")
+        groups = [
+            Group(message="feat: c", commits=["temp: c.py:L1"]),
+            Group(message="feat: a", commits=["temp: a.py:L1"]),
+        ]
+        plan = build_rebase_plan(commits, groups)
+        assert plan == [
+            "pick sha0000",
+            "pick sha0002",
+            "pick sha0003",
+            AmendEntry("feat: c"),
+            "pick sha0001",
+            AmendEntry("feat: a"),
+            "pick sha0004",
+        ]
+
     def test_empty_groups_all_ungrouped(self) -> None:
         commits = self._commits("temp: a.py:L1", "temp: b.py:L1")
         plan = build_rebase_plan(commits, [])
@@ -321,6 +338,21 @@ class TestExecuteRebase:
         execute_rebase(base, build_rebase_plan(commits, groups))
 
         assert str(git.log("--format=%s", f"{base}..HEAD")).strip() == "feat: combined"
+
+    def test_real_commits_below_the_temp_commits_are_unchanged(self, git_repo: Path) -> None:
+        base = str(git("rev-parse", "HEAD")).strip()
+        (git_repo / "real.py").write_text("real = 1\n")
+        git.add(".")
+        git.commit("--no-verify", "-m", "Add real.py")
+        real = str(git("rev-parse", "HEAD")).strip()
+        self._setup_temp_commits(git_repo, n=2)
+
+        commits = list_commits(base)
+        groups = [Group(message="feat: combined", commits=[c.message for c in commits[1:]])]
+        execute_rebase(base, build_rebase_plan(commits, groups))
+
+        assert str(git("rev-parse", "HEAD~1")).strip() == real
+        assert str(git.log("-1", "--format=%s")).strip() == "feat: combined"
 
     def test_ungrouped_commits_preserved(self, git_repo: Path) -> None:
         base = self._setup_temp_commits(git_repo, n=2)

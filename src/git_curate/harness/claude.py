@@ -14,6 +14,9 @@ import sh
 from ..common import ClaudeError, CLINotFoundError, Exit
 from . import THINKING_MSGS, BaseHarness, build_prompt, console
 
+# Lines of claude's stdout to show when it fails; a whole session's events can be long.
+_OUTPUT_TAIL_LINES = 20
+
 
 def _fmt_tokens(n: int) -> str:
     if n >= 1_000_000:
@@ -182,13 +185,11 @@ class ClaudeHarness(BaseHarness):
             print("error: 'claude' CLI not found. Install Claude Code to use this harness.", file=sys.stderr)
             raise CLINotFoundError() from e
         except sh.ErrorReturnCode as e:
-            print("\nclaude exited with an error, re-running to capture output…", file=sys.stderr, flush=True)
-            try:
-                sh.claude(*args, _cwd=repo_root, _in=os.devnull)
-            except sh.ErrorReturnCode as e2:
-                for stream in (e2.stdout, e2.stderr):
-                    if stream:
-                        print(stream.decode(errors="replace"), file=sys.stderr, flush=True)
+            # stderr went straight through; sh keeps the stdout that was iterated.
+            print(f"\nclaude exited with code {e.exit_code}.", file=sys.stderr, flush=True)
+            tail = e.stdout.decode(errors="replace").splitlines()[-_OUTPUT_TAIL_LINES:]
+            if tail:
+                print("Last of its output:\n" + "\n".join(tail), file=sys.stderr, flush=True)
             raise Exit(e.exit_code) from e
 
     def build_args(self, prompt: str, temp_dir: str) -> list[str]:

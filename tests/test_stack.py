@@ -213,6 +213,19 @@ class TestAnalyze:
         # And some merge took an earlier merge's result.
         assert not set(seen) <= {c.sha for c in list_commits("main")} | {str(git("rev-parse", "main")).strip()}
 
+    def test_broken_invariant_is_reported_as_json(
+        self, mixed_branch: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Leaving out "Add a" skips "Add b"; when "Tweak a" then conflicts, the
+        # catch-up merge over "Add b" must apply, and here it doesn't.
+        monkeypatch.setattr(stack_mod, "merge_batch", lambda merges: [Conflict(paths=["b"]) for _ in merges])
+        code, out = _run("analyze", "--trunk", "main")
+        assert code == 1
+        assert out["ok"] is False
+        assert out["errors"] == [
+            f"internal error: skipped commits conflict with what {_short(mixed_branch['a1'])} left out: ['b']"
+        ]
+
     def test_commit_trees_wraps_each_tree(self, git_repo: Path) -> None:
         tree = str(git("rev-parse", "HEAD^{tree}")).strip()
         wrapped = commit_trees([tree, tree])

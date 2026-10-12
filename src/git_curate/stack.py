@@ -315,7 +315,9 @@ def compute_requires(base: str) -> list[CommitInfo]:
         behind = [i for i in dropped if pos[i] != parents[j]]
         for i, result in zip(behind, merge_batch([(pos[i], tips[i], parents[j]) for i in behind]), strict=True):
             if isinstance(result, Conflict):
-                raise AssertionError(f"skipped commits conflict with what {commits[i].sha} left out: {result.paths}")
+                # Can't happen: the chain matches the original history outside what it left out.
+                reason = f"skipped commits conflict with what {_short(commits[i].sha)} left out: {result.paths}"
+                _fail({"ok": False, "errors": [f"internal error: {reason}"]})
             merged[i] = result
         for i, tip in zip(merged, commit_trees(list(merged.values())), strict=True):
             tips[i] = tip

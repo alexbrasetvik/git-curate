@@ -65,8 +65,12 @@ the result must equal HEAD's tree, so nothing is lost in the split.
 Usage:
 ------
     uvx git-curate stack analyze [--trunk main]
-    uvx git-curate stack check --spec .git/git-curate-stack-spec.json
-    uvx git-curate stack apply --spec .git/git-curate-stack-spec.json
+    uvx git-curate stack check [--spec <path>]
+    uvx git-curate stack apply [--spec <path>]
+
+The spec defaults to git-curate-stack-spec.json in the git dir, the path
+``git rev-parse --git-path git-curate-stack-spec.json`` prints: usually
+.git/git-curate-stack-spec.json, but per worktree in a linked one.
 """
 
 from __future__ import annotations
@@ -91,7 +95,7 @@ from .common import (
     resolve_branch_base,
 )
 
-DEFAULT_SPEC_PATH = ".git/git-curate-stack-spec.json"
+DEFAULT_SPEC_NAME = "git-curate-stack-spec.json"
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -577,13 +581,24 @@ def _load(spec_path: str) -> tuple[StackSpec, str]:
     return spec, base
 
 
-SpecOption = Annotated[str, typer.Option("--spec", help="Path to the JSON stack spec.")]
+SpecOption = Annotated[
+    str | None,
+    typer.Option(
+        "--spec",
+        help=f"Path to the JSON stack spec (default: `git rev-parse --git-path {DEFAULT_SPEC_NAME}`).",
+    ),
+]
+
+
+def _spec_path(spec: str | None) -> str:
+    """*spec*, or the default spec path in this worktree's git dir."""
+    return spec or str(git("rev-parse", "--git-path", DEFAULT_SPEC_NAME)).strip()
 
 
 @app.command("check")
-def check_command(spec: SpecOption = DEFAULT_SPEC_PATH) -> None:
+def check_command(spec: SpecOption = None) -> None:
     """Simulate the spec: report each layer, and the first conflict if a reorder isn't clean. Writes no refs."""
-    parsed, base = _load(spec)
+    parsed, base = _load(_spec_path(spec))
     report = build(parsed, base)
     _emit(report)
     if not report["ok"]:
@@ -591,9 +606,9 @@ def check_command(spec: SpecOption = DEFAULT_SPEC_PATH) -> None:
 
 
 @app.command("apply")
-def apply_command(spec: SpecOption = DEFAULT_SPEC_PATH) -> None:
+def apply_command(spec: SpecOption = None) -> None:
     """Create a branch for each layer, all or none. Never moves HEAD or touches the working tree."""
-    parsed, base = _load(spec)
+    parsed, base = _load(_spec_path(spec))
     report = build(parsed, base)
     if not report["ok"]:
         _fail(report)

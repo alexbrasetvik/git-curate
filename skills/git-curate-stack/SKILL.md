@@ -66,7 +66,7 @@ Design the stacks:
 - **Order.** Keep the original order unless a different one reads better for review. Move a commit only when the move doesn't conflict.
 - **Names.** A layer's name is the branch it becomes. Follow the branch naming in the instructions file, else the repository's convention if it has one. Otherwise use `<topic>/<concern>`, for example `billing/schema` and `billing/api`. A name can't be both a branch and a prefix: `billing` and `billing/api` can't coexist.
 
-Write the spec to `.git/git-curate-stack-spec.json` with the Write tool:
+Write the spec with the Write tool to the path `git rev-parse --git-path git-curate-stack-spec.json` prints, made absolute. That is `.git/git-curate-stack-spec.json` in a main checkout, but in a linked worktree `.git` is a file and the path is under the worktree's own git dir. `stack check` and `stack apply` read it from there by default.
 
 ```json
 {
@@ -98,7 +98,7 @@ uvx git-curate stack check
 
 It builds every layer without writing any refs. It exits 0 with `"ok": true` when every stack builds and the stacks together reproduce HEAD exactly. On failure, `conflict` names the `layer` and the commit that didn't apply, its `paths`, and `blocked_by`: earlier commits touching those paths that aren't below it in that stack. `errors` lists problems in the spec itself. Revise and re-check until it passes. Never show the user a proposal that hasn't passed.
 
-Draft each layer's PR too. The title is imperative and names the change, not the branch. The body takes two to five sentences on what the layer does and why. Write them to `.git/git-curate-stack-prs.json`, keyed by layer name:
+Draft each layer's PR too. The title is imperative and names the change, not the branch. The body takes two to five sentences on what the layer does and why. Write them next to the spec, to the path `git rev-parse --git-path git-curate-stack-prs.json` prints, keyed by layer name:
 
 ```json
 {

@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
+from git_curate import deps as deps_mod
 from git_curate.cli import app
 from git_curate.common import git, list_commits
 from git_curate.deps import Dependency, compute_dependencies, parse_hunk_range
@@ -122,6 +124,45 @@ class TestComputeDependencies:
         slice_hunks([])
 
         assert compute_dependencies(base) == []
+
+    def test_traces_each_later_commit_once(self, git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        f = git_repo / "target.py"
+        _write_lines(f)
+        git.add(".")
+        git.commit("--no-verify", "-m", "add target.py")
+        base = str(git("rev-parse", "HEAD")).strip()
+        for value in ("A", "B", "C"):
+            _modify_line(f, 9, f"line10 = {value}")
+            git.add("--", "target.py")
+            assert slice_hunks([]) == 1
+
+        traced = []
+        real = deps_mod._commits_touching
+
+        def spy(file: str, start: int, end: int, base: str) -> set[str] | None:
+            traced.append((file, start, end))
+            return real(file, start, end, base)
+
+        monkeypatch.setattr(deps_mod, "_commits_touching", spy)
+        msgs = [c.message for c in list_commits(base)]
+        assert compute_dependencies(base) == [
+            Dependency(earlier_msg=msgs[0], later_msg=msgs[1]),
+            Dependency(earlier_msg=msgs[0], later_msg=msgs[2]),
+            Dependency(earlier_msg=msgs[1], later_msg=msgs[2]),
+        ]
+        assert len(traced) == 2  # once per later commit, not once per pair
+
+    def test_untraceable_overlap_is_assumed_with_a_warning(
+        self, git_repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        base = str(git("rev-parse", "HEAD")).strip()
+        # gone.py doesn't exist at HEAD, so git log -L fails.
+        for n in (1, 2):
+            git.commit("--no-verify", "--allow-empty", "-m", f"temp: gone.py:L1-1 #0000000{n}-{n}")
+
+        msgs = [c.message for c in list_commits(base)]
+        assert compute_dependencies(base) == [Dependency(earlier_msg=msgs[0], later_msg=msgs[1])]
+        assert "warning: cannot trace gone.py:L1-1" in capsys.readouterr().err
 
     def test_empty_session_no_dependency(self, git_repo: Path) -> None:
         git_repo / "empty.py"

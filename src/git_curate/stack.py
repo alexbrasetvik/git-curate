@@ -41,7 +41,9 @@ Algorithm:
 ----------
 Replaying commit C onto X is a three-way merge with C's parent as the base:
 ``git merge-tree --write-tree --merge-base=C^ X C``. It succeeds exactly when
-cherry-picking C onto X would apply without conflicts.
+cherry-picking C onto X would apply without conflicts. Older git (2.43
+included) merges only commits, not trees, so a merged tree that is merged
+again is first wrapped in a throwaway commit.
 
 ``analyze`` finds, for each commit i, the later commits that can't be
 replayed without it: it rebuilds the chain from i's parent leaving i out, and
@@ -70,7 +72,9 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import shlex
+import tempfile
 from dataclasses import dataclass, field
 from typing import Annotated, Any, NoReturn
 
@@ -114,7 +118,7 @@ class Conflict:
 
 
 def merge_trees(base: str, ours: str, theirs: str) -> str | Conflict:
-    """Three-way merge tree-ishes in the object database; return the tree or the conflicted paths."""
+    """Three-way merge commits in the object database; return the tree or the conflicted paths."""
     result = git(
         "merge-tree",
         "--write-tree",
@@ -156,6 +160,25 @@ def merge_batch(merges: list[tuple[str, str, str]]) -> list[str | Conflict]:
         paths = list(iter(fields.__next__, ""))
         results.append(tree if status == "1" else Conflict(paths=paths))
     return results
+
+
+# The identity of commit_trees' commits; fixed, so a tree always gets the same commit.
+_WRAP_IDENT = "git-curate <git-curate@local> 0 +0000"
+
+
+def commit_trees(trees: list[str]) -> list[str]:
+    """Wrap each of *trees* in a parentless commit, for merging it again; in one git process."""
+    if not trees:
+        return []
+    with tempfile.TemporaryDirectory() as d:
+        paths = []
+        for n, tree in enumerate(trees):
+            path = os.path.join(d, str(n))
+            with open(path, "w") as f:
+                f.write(f"tree {tree}\nauthor {_WRAP_IDENT}\ncommitter {_WRAP_IDENT}\n\n")
+            paths.append(path)
+        out = str(git("hash-object", "-w", "-t", "commit", "--stdin-paths", _in="".join(f"{p}\n" for p in paths)))
+    return out.split()
 
 
 def _parent(sha: str) -> str:
@@ -247,37 +270,41 @@ def compute_requires(base: str) -> list[CommitInfo]:
     """List base..HEAD with, for each commit, the earlier commits it can't be replayed without."""
     commits = list_commits(base)
     infos = [CommitInfo(sha=c.sha, subject=c.message, files=_files(c.sha)) for c in commits]
-    trees = [_tree(c.sha) for c in commits]
-    parent_trees = [_tree(base)] + trees[:-1]
+    shas = [c.sha for c in commits]
+    parents = [base] + shas[:-1]
 
-    # Chain i leaves out commit i. Its tip equals pos[i], an original tree,
-    # except at the paths in dirty[i]: those of i and of every commit it dropped.
-    tips = list(parent_trees)
-    pos = list(trees)
+    # Chain i leaves out commit i. Its tip is a commit whose tree equals
+    # pos[i]'s, an original commit, except at the paths in dirty[i]: those of
+    # i and of every commit it dropped.
+    tips = list(parents)
+    pos = list(shas)
     dirty = [_Paths(info.files) for info in infos]
 
     requires: list[set[int]] = [set() for _ in commits]
     for j in range(1, len(commits)):
         paths = _Paths(infos[j].files)
         chains = [i for i in range(j) if dirty[i].overlaps(paths)]
-        results = merge_batch([(pos[i], tips[i], trees[j]) for i in chains])
+        results = merge_batch([(pos[i], tips[i], shas[j]) for i in chains])
         dropped = []
+        merged: dict[int, str] = {}
         for i, result in zip(chains, results, strict=True):
             if isinstance(result, Conflict):
                 requires[j].add(i)
                 dirty[i].add(paths)
                 dropped.append(i)
             else:
-                tips[i] = result
-                pos[i] = trees[j]
+                merged[i] = result
+                pos[i] = shas[j]
         # A dropped commit still leaves the skipped ones before it to pick up.
-        behind = [i for i in dropped if pos[i] != parent_trees[j]]
-        for i, result in zip(behind, merge_batch([(pos[i], tips[i], parent_trees[j]) for i in behind]), strict=True):
+        behind = [i for i in dropped if pos[i] != parents[j]]
+        for i, result in zip(behind, merge_batch([(pos[i], tips[i], parents[j]) for i in behind]), strict=True):
             if isinstance(result, Conflict):
                 raise AssertionError(f"skipped commits conflict with what {commits[i].sha} left out: {result.paths}")
-            tips[i] = result
+            merged[i] = result
+        for i, tip in zip(merged, commit_trees(list(merged.values())), strict=True):
+            tips[i] = tip
         for i in dropped:
-            pos[i] = trees[j]
+            pos[i] = shas[j]
 
     # Leaving i out drops everything that conflicts without it, so this is
     # mostly closed already; close it explicitly in case a replay happened to

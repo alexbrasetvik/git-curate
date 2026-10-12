@@ -16,7 +16,7 @@ from typer.testing import CliRunner
 import git_curate.stack as stack_mod
 from git_curate.cli import app
 from git_curate.common import git, list_commits
-from git_curate.stack import Conflict, _tree, compute_requires, merge_trees
+from git_curate.stack import Conflict, commit_trees, compute_requires, merge_trees
 
 runner = CliRunner()
 
@@ -127,17 +127,16 @@ def _random_branch(repo: Path, rng: random.Random, commits: int) -> None:
 def _naive_requires(base: str) -> dict[str, list[str]]:
     """The leave-one-out definition, one merge per (commit, later commit) pair."""
     shas = [c.sha for c in list_commits(base)]
-    trees = [_tree(sha) for sha in shas]
-    parent_trees = [_tree(base)] + trees[:-1]
+    parents = [str(git("rev-parse", base)).strip()] + shas[:-1]
     requires: list[set[int]] = [set() for _ in shas]
     for i in range(len(shas)):
-        tip = parent_trees[i]
+        tip = parents[i]
         for j in range(i + 1, len(shas)):
-            result = merge_trees(parent_trees[j], tip, trees[j])
+            result = merge_trees(parents[j], tip, shas[j])
             if isinstance(result, Conflict):
                 requires[j].add(i)
             else:
-                tip = result
+                [tip] = commit_trees([result])
     for j in range(len(shas)):
         for k in sorted(requires[j]):
             requires[j] |= requires[k]
@@ -213,6 +212,12 @@ class TestAnalyze:
         compute_requires("main")
         # And some merge took an earlier merge's result.
         assert not set(seen) <= {c.sha for c in list_commits("main")} | {str(git("rev-parse", "main")).strip()}
+
+    def test_commit_trees_wraps_each_tree(self, git_repo: Path) -> None:
+        tree = str(git("rev-parse", "HEAD^{tree}")).strip()
+        wrapped = commit_trees([tree, tree])
+        assert len(wrapped) == 2
+        assert [str(git("rev-parse", f"{c}^{{tree}}")).strip() for c in wrapped] == [tree, tree]
 
     @pytest.mark.parametrize("seed", range(6))
     def test_matches_replaying_every_chain(self, feature: Path, seed: int) -> None:

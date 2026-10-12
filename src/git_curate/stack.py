@@ -535,7 +535,7 @@ def build(spec: StackSpec, base: str) -> dict[str, Any]:
             report["ok"] = False
             report["conflict"] = {"between_stacks": True, "paths": merged.paths}
             return report
-        combined = merged
+        [combined] = commit_trees([merged])  # older git merges only commits
     head_tree = _tree("HEAD")
     if _tree(combined) != head_tree:
         report["ok"] = False

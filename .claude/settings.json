@@ -2,8 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(uvx git-curate *)",
-      "Write(.git/git-curate-spec.json)",
-      "Write(.git/git-curate-stack-spec.json)",
+      "Edit(.git/git-curate-spec.json)",
+      "Edit(.git/git-curate-stack-spec.json)",
       "Bash(pre-commit run *)",
       "Bash(mise lint *)",
       "Bash(mise typecheck *)"

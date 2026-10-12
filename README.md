@@ -117,7 +117,7 @@ After slicing, write the diff to disk for the agent:
 uvx git-curate diff --tmp
 ```
 
-`--tmp` writes the diff to `.git/git-curate-diff.patch` and prints `<path> <line-count>` on one line. The agent reads this file and produces a JSON grouping spec.
+`--tmp` writes the diff to `git-curate-diff.patch` in the git dir (`.git/`, or the worktree's own git dir in a linked worktree) and prints `<path> <line-count>` on one line. The agent reads this file and produces a JSON grouping spec.
 
 The spec is an ordered list of groups. Order determines the final commit order:
 

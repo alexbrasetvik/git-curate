@@ -14,9 +14,11 @@ from pathlib import Path
 
 import pytest
 import sh
+from typer.testing import CliRunner
 
 import git_curate.group as _group_mod
 import git_curate.slice as _slice_mod
+from git_curate.cli import app
 from git_curate.common import CURATE_AUTHOR_EMAIL, CURATE_AUTHOR_NAME, find_slice_base, git
 from git_curate.group import Group
 
@@ -129,6 +131,23 @@ class TestWorktree:
         log = str(git.log("--oneline", f"{base}..HEAD")).strip().splitlines()
         assert len(log) == 1
         assert "feat: combined" in log[0]
+
+    def test_diff_tmp_writes_into_the_worktree_git_dir(self, git_worktree: tuple[Path, Path]) -> None:
+        """In a linked worktree .git is a file, so the patch goes under the worktree's own git dir."""
+        main, wt = git_worktree
+        base = str(git("rev-parse", "HEAD")).strip()
+        (wt / "feature.py").write_text("x = 1\n")
+        git.add(".")
+        git.commit("--no-verify", "-m", "add feature.py")
+
+        result = CliRunner().invoke(app, ["diff", "--tmp", base])
+
+        assert result.exit_code == 0, result.output
+        path, count = result.output.split()
+        assert Path(path) == Path(str(git("rev-parse", "--absolute-git-dir")).strip()) / "git-curate-diff.patch"
+        assert Path(path).is_relative_to(main / ".git" / "worktrees")
+        assert "x = 1" in Path(path).read_text()
+        assert int(count) > 0
 
     def test_concurrent_worktrees_do_not_interfere(self, tmp_path: Path) -> None:
         """Two linked worktrees slice independently with no shared state.

@@ -9,8 +9,9 @@ Without an explicit base, resolve_base() finds the first non-curate commit
 walking back from HEAD. With no active session and no explicit base, the
 command prints a notice to stderr and exits successfully.
 
-With --tmp, the diff goes to .git/git-curate-diff.patch and the command
-prints "<path> <line-count>" instead.
+With --tmp, the diff goes to git-curate-diff.patch in the git dir (per
+worktree, see `git rev-parse --git-path`) and the command prints
+"<path> <line-count>" instead.
 
 Usage:
 ------
@@ -21,7 +22,7 @@ Usage:
     uvx git-curate diff main
     uvx git-curate diff a1b2c3d
 
-    # Write to .git/git-curate-diff.patch, print its path and line count
+    # Write to git-curate-diff.patch in the git dir, print its path and line count
     uvx git-curate diff --tmp
 """
 
@@ -53,7 +54,7 @@ def diff_command(
         bool,
         typer.Option(
             "--tmp",
-            help="Write the diff to .git/git-curate-diff.patch and print its path and line count instead.",
+            help="Write the diff to git-curate-diff.patch in the git dir and print its path and line count instead.",
         ),
     ] = False,
 ) -> None:
@@ -77,8 +78,8 @@ def diff_command(
         return
 
     if tmp:
-        repo_root = str(git("rev-parse", "--show-toplevel")).strip()
-        patch_path = os.path.join(repo_root, ".git", "git-curate-diff.patch")
+        # In a linked worktree, .git is a file; --git-path gives the worktree's own git dir.
+        patch_path = os.path.abspath(str(git("rev-parse", "--git-path", "git-curate-diff.patch")).strip())
         with open(patch_path, "w") as f:
             f.write(output)
         line_count = output.count("\n") + 1

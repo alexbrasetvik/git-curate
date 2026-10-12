@@ -96,8 +96,8 @@ The base SHA is on the **Base** line at the end of this prompt. Use it explicitl
 uvx git-curate diff --tmp <base>
 ```
 
-The `--tmp` flag writes the diff to `.git/git-curate-diff.patch` inside the
-repo and prints `<path> <line-count>` on a single line. Capture both values
+The `--tmp` flag writes the diff to `git-curate-diff.patch` in the git dir
+(per worktree) and prints `<path> <line-count>` on a single line. Capture both values
 from the output. **Do not run `wc -l`**; the count is already there. Use
 **only the path printed by this command**; do not read any other patch files
 referenced in context.

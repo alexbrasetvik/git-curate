@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
+import git_curate.stack as stack_mod
 from git_curate.cli import app
 from git_curate.common import git, list_commits
 from git_curate.stack import Conflict, _tree, compute_requires, merge_trees
@@ -192,6 +193,26 @@ class TestAnalyze:
         _, out = _run("analyze", "--trunk", "main")
         assert out["commits"][2]["requires"] == [_short(a)]
         assert out["commits"][3]["requires"] == [_short(a)]
+
+    def test_merges_only_commits(
+        self, mixed_branch: dict[str, str], commit: CommitFn, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # git 2.43's merge-tree rejects trees: "expected commit type, but the
+        # object dereferences to tree type".
+        commit("Tweak a again", a="A1\nA2\na3\n")
+        real = stack_mod.merge_batch
+        seen: list[str] = []
+
+        def commits_only(merges: list[tuple[str, str, str]]) -> list[str | Conflict]:
+            for merge in merges:
+                seen.extend(merge)
+                assert {str(git("cat-file", "-t", rev)).strip() for rev in merge} == {"commit"}
+            return real(merges)
+
+        monkeypatch.setattr(stack_mod, "merge_batch", commits_only)
+        compute_requires("main")
+        # And some merge took an earlier merge's result.
+        assert not set(seen) <= {c.sha for c in list_commits("main")} | {str(git("rev-parse", "main")).strip()}
 
     @pytest.mark.parametrize("seed", range(6))
     def test_matches_replaying_every_chain(self, feature: Path, seed: int) -> None:

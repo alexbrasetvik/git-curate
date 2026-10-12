@@ -308,6 +308,20 @@ class TestExecuteRebase:
         assert str(git("rev-parse", "HEAD")).strip() == tip
         assert not os.path.exists(str(git("rev-parse", "--git-path", "git-curate-group")).strip())
 
+    def test_failing_hooks_do_not_stop_the_rebase(self, git_repo: Path) -> None:
+        base = self._setup_temp_commits(git_repo, n=2)
+        hooks = Path(str(git("rev-parse", "--git-path", "hooks")).strip())
+        hooks.mkdir(exist_ok=True)
+        for name in ("pre-commit", "commit-msg", "pre-rebase"):
+            (hooks / name).write_text("#!/bin/sh\necho hook-ran >&2\nexit 1\n")
+            (hooks / name).chmod(0o755)
+
+        commits = list_commits(base)
+        groups = [Group(message="feat: combined", commits=[c.message for c in commits])]
+        execute_rebase(base, build_rebase_plan(commits, groups))
+
+        assert str(git.log("--format=%s", f"{base}..HEAD")).strip() == "feat: combined"
+
     def test_ungrouped_commits_preserved(self, git_repo: Path) -> None:
         base = self._setup_temp_commits(git_repo, n=2)
         commits = list_commits(base)
